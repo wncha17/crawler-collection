@@ -1,5 +1,13 @@
 import requests
 
+def get_login_info(file_path):
+    """파일에서 아이디와 비밀번호를 읽어오는 함수"""
+    with open(file_path, 'r', encoding='utf-8') as f:
+        lines = [line.strip() for line in f.readlines() if line.strip()]
+        user_id = lines[0].split(': ')[-1].strip()
+        user_pw = lines[1].split(': ')[-1].strip()
+    return user_id, user_pw
+
 def crawl_bbq_cart():
     # 세션 객체 생성 - 쿠키를 자동으로 주고 받음
     session = requests.Session()
@@ -20,9 +28,10 @@ def crawl_bbq_cart():
 
         # STEP 1: 로그인 수행 (수동 쿠키를 만드는 과정)
         login_url = "https://bbq.co.kr/api/auth/callback/member"
+        user_id, user_pw = get_login_info('login_info.txt')
         login_payload = { 
-            "username": "wncha17",
-            "password": "2911wwCK**",
+            "username": user_id,
+            "password": user_pw,
             "redirect": "false",
             "csrfToken": csrf_token,
             "callbackUrl": "https://bbq.co.kr/member/login",
