@@ -1,0 +1,3 @@
+acct_no=3120226692471
+birth=991202
+password=0000
