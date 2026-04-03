@@ -1,5 +1,6 @@
 {
   "dependencies": {
+    "axios-cookiejar-support": "^6.0.5",
     "cheerio": "^1.2.0",
     "selenium-webdriver": "^4.41.0"
   }
