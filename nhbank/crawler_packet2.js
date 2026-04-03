@@ -18,29 +18,28 @@ async function automateNonghyup() {
             'Origin': 'https://banking.nonghyup.com',
             'Accept': 'text/html, */*; q=0.01',
             'X-Requested-With': 'XMLHttpRequest',
-            // 'Cookie': 'mainSetCookie=main_IP; PCID=71c29d65-2bc4-68ce-2bec-fc98c4da26b2-1774859233948; acookie0=done0; mainSetCookie=main_IP; _n_session=17749991681634876366829; curSvcId=IPMSP0011I; EFIP_PT_SSID=NjgxZjEyYmEtMjY4Mi00MGMwLWJjMmQtNTM2NjFkYmY0ZTEw; _n_seq=16; _n_dur=4; _n_cTime=1775025745517; _n_dfseq=16'
+            'Cookie': 'mainSetCookie=main_IP; mainSetCookie=main_IP; PCID=0c78485c-5837-2d88-fd7a-cadc3934c5cc-1774568756431; _n_session=17748261931842426013903; curSvcId=IPMSP0011I; acookie0=done0; _n_seq=126; _n_dur=2; _n_cTime=1775183013612; _n_dfseq=126; EFIP_PT_SSID=NGY3OTM1YTQtMDQ3MS00MjY5LWE1MWYtNjNlNTA1ZDAzM2Ux'
         }
     }));
 
     try {
 
-
+        /*
         // URL을 두 번째 인자로 명시해야 합니다.
         const targetUrl = 'https://banking.nonghyup.com';
-        const cookieString = 'mainSetCookie=main_IP; mainSetCookie=main_IP; PCID=0c78485c-5837-2d88-fd7a-cadc3934c5cc-1774568756431; _n_session=17748261931842426013903; curSvcId=IPMSP0011I; EFIP_PT_SSID=MTJjNWNiNzItZmJkOS00ZTE5LWIxYzYtYjcyYTU1Njk5ZmUw; acookie0=done0; _n_seq=124; _n_dur=3; _n_cTime=1775180681229; _n_dfseq=124';
+        const cookieString = 'mainSetCookie=main_IP; mainSetCookie=main_IP; PCID=0c78485c-5837-2d88-fd7a-cadc3934c5cc-1774568756431; _n_session=17748261931842426013903; curSvcId=IPMSP0011I; EFIP_PT_SSID=MTJjNWNiNzItZmJkOS00ZTE5LWIxYzYtYjcyYTU1Njk5ZmUw; acookie0=done0; _n_seq=125; _n_dur=5; _n_cTime=1775181806575; _n_dfseq=125';
 
         // 한 번에 여러 개를 넣을 때는 반복문을 쓰거나, 세미콜론으로 구분된 문자열을 처리해야 할 수 있지만, 
         // 가장 안전한 방법은 아래와 같이 하나씩 혹은 통째로 주입하는 것입니다.
         // 기존 쿠키 초기화 (필요 시)
         await jar.removeAllCookies(); 
-
         // 쪼개서 하나씩 주입하여 중복 방지
         const cookies = cookieString.split('; ');
         for (const c of cookies) {
             await jar.setCookie(c, targetUrl);
         }
         console.log("현재 전송될 쿠키:", await jar.getSetCookieStrings(targetUrl));
-
+        */
 
 
 
@@ -48,20 +47,26 @@ async function automateNonghyup() {
 
         // STEP 1: 세션 초기화 및 TOKEN 추출
         console.log("1. 금융 세션 연결 및 토큰 추출 중...");
-        const mainPage = await client.get('/servlet/IPMSP0011I.view');
         
-        const tokenMatch = mainPage.data.match(/window\[['"]TOKEN['"]\]\s*=\s*['"]([^'"]+)['"]/);
-        const autoToken = tokenMatch ? tokenMatch[1] : null;
-
-
+        // const tokenMatch = mainPage.data.match(/window\[['"]TOKEN['"]\]\s*=\s*['"]([^'"]+)['"]/);
+        // const autoToken = tokenMatch ? tokenMatch[1] : null;
         // if (!autoToken) throw new Error("TOKEN을 획득하지 못했습니다.");
         // console.log(`획득한 TOKEN: ${autoToken}`);
 
 
-        console.log("조회 페이지 접속 중 (세션 활성화)...");
+        // [자동화 단계 1] 보안 서블릿에 요청하여 UUID 할당받기
+
+        // 2. 세션 활성화를 위한 "단 한 번의" 페이지 로드
         await client.get('/servlet/IPMSP0011I.view', {
-            headers: { 'Referer': 'https://banking.nonghyup.com/nhbank.html' }
+            headers: {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36',
+                'sec-ch-ua': '"Chromium";v="146", "Not-A.Brand";v="24", "Google Chrome";v="146"',
+                'sec-ch-ua-mobile': '?0',
+                'sec-ch-ua-platform': '"Windows"'
+            }
         });
+        
+        
         const transkeyRes = await client.post('/servlet/transkeyServlet',
             'op=load&name=Tk_rlno1&keyboardType=number&fieldType=text&maxSize=6&x=0&y=0',
             { 
@@ -69,14 +74,13 @@ async function automateNonghyup() {
                     'Content-Type': 'application/x-www-form-urlencoded',
                     'Accept': '*/*',
                     'X-Requested-With': 'XMLHttpRequest',
-                    'Referer': 'https://banking.nonghyup.com/servlet/IPMSP0011I.view'
+                    'Referer': 'https://banking.nonghyup.com/servlet/IPMSP0011I.view',
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36'
                 } 
             }
         );
 
-
-        console.log("실시간 보안 UUID 획득 중...");
-
+        // [자동화 단계 2] 응답 데이터에서 UUID 추출
         // 응답 문자열 내의 uuid 값을 따내기
         const uuidMatch = transkeyRes.data.match(/transkeyUuid=([a-f0-9]{64})/);
         const liveUuid = uuidMatch ? uuidMatch[1] : null;
