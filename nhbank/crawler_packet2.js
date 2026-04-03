@@ -18,29 +18,28 @@ async function automateNonghyup() {
             'Origin': 'https://banking.nonghyup.com',
             'Accept': 'text/html, */*; q=0.01',
             'X-Requested-With': 'XMLHttpRequest',
-            // 'Cookie': 'mainSetCookie=main_IP; PCID=71c29d65-2bc4-68ce-2bec-fc98c4da26b2-1774859233948; acookie0=done0; mainSetCookie=main_IP; _n_session=17749991681634876366829; curSvcId=IPMSP0011I; EFIP_PT_SSID=NjgxZjEyYmEtMjY4Mi00MGMwLWJjMmQtNTM2NjFkYmY0ZTEw; _n_seq=16; _n_dur=4; _n_cTime=1775025745517; _n_dfseq=16'
+            'Cookie': 'mainSetCookie=main_IP; mainSetCookie=main_IP; PCID=0c78485c-5837-2d88-fd7a-cadc3934c5cc-1774568756431; _n_session=17748261931842426013903; curSvcId=IPMSP0011I; acookie0=done0; _n_seq=126; _n_dur=2; _n_cTime=1775183013612; _n_dfseq=126; EFIP_PT_SSID=NGY3OTM1YTQtMDQ3MS00MjY5LWE1MWYtNjNlNTA1ZDAzM2Ux'
         }
     }));
 
     try {
 
-
+        /*
         // URL을 두 번째 인자로 명시해야 합니다.
         const targetUrl = 'https://banking.nonghyup.com';
-        const cookieString = 'mainSetCookie=main_IP; mainSetCookie=main_IP; PCID=0c78485c-5837-2d88-fd7a-cadc3934c5cc-1774568756431; _n_session=17748261931842426013903; curSvcId=IPMSP0011I; EFIP_PT_SSID=MTJjNWNiNzItZmJkOS00ZTE5LWIxYzYtYjcyYTU1Njk5ZmUw; acookie0=done0; _n_seq=124; _n_dur=3; _n_cTime=1775180681229; _n_dfseq=124';
+        const cookieString = 'mainSetCookie=main_IP; mainSetCookie=main_IP; PCID=0c78485c-5837-2d88-fd7a-cadc3934c5cc-1774568756431; _n_session=17748261931842426013903; curSvcId=IPMSP0011I; EFIP_PT_SSID=MTJjNWNiNzItZmJkOS00ZTE5LWIxYzYtYjcyYTU1Njk5ZmUw; acookie0=done0; _n_seq=125; _n_dur=5; _n_cTime=1775181806575; _n_dfseq=125';
 
         // 한 번에 여러 개를 넣을 때는 반복문을 쓰거나, 세미콜론으로 구분된 문자열을 처리해야 할 수 있지만, 
         // 가장 안전한 방법은 아래와 같이 하나씩 혹은 통째로 주입하는 것입니다.
         // 기존 쿠키 초기화 (필요 시)
         await jar.removeAllCookies(); 
-
         // 쪼개서 하나씩 주입하여 중복 방지
         const cookies = cookieString.split('; ');
         for (const c of cookies) {
             await jar.setCookie(c, targetUrl);
         }
         console.log("현재 전송될 쿠키:", await jar.getSetCookieStrings(targetUrl));
-
+        */
 
 
 
@@ -48,23 +47,26 @@ async function automateNonghyup() {
 
         // STEP 1: 세션 초기화 및 TOKEN 추출
         console.log("1. 금융 세션 연결 및 토큰 추출 중...");
-        const mainPage = await client.get('/servlet/IPMSP0011I.view');
-        console.log(mainPage.data);
-
-
-        /*
-        const tokenMatch = mainPage.data.match(/window\[['"]TOKEN['"]\]\s*=\s*['"]([^'"]+)['"]/);
-        const autoToken = tokenMatch ? tokenMatch[1] : null;
-
-
+        
+        // const tokenMatch = mainPage.data.match(/window\[['"]TOKEN['"]\]\s*=\s*['"]([^'"]+)['"]/);
+        // const autoToken = tokenMatch ? tokenMatch[1] : null;
         // if (!autoToken) throw new Error("TOKEN을 획득하지 못했습니다.");
         // console.log(`획득한 TOKEN: ${autoToken}`);
 
 
-        console.log("조회 페이지 접속 중 (세션 활성화)...");
+        // [자동화 단계 1] 보안 서블릿에 요청하여 UUID 할당받기
+
+        // 2. 세션 활성화를 위한 "단 한 번의" 페이지 로드
         await client.get('/servlet/IPMSP0011I.view', {
-            headers: { 'Referer': 'https://banking.nonghyup.com/nhbank.html' }
+            headers: {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36',
+                'sec-ch-ua': '"Chromium";v="146", "Not-A.Brand";v="24", "Google Chrome";v="146"',
+                'sec-ch-ua-mobile': '?0',
+                'sec-ch-ua-platform': '"Windows"'
+            }
         });
+        
+        
         const transkeyRes = await client.post('/servlet/transkeyServlet',
             'op=load&name=Tk_rlno1&keyboardType=number&fieldType=text&maxSize=6&x=0&y=0',
             { 
@@ -72,14 +74,13 @@ async function automateNonghyup() {
                     'Content-Type': 'application/x-www-form-urlencoded',
                     'Accept': '*/*',
                     'X-Requested-With': 'XMLHttpRequest',
-                    'Referer': 'https://banking.nonghyup.com/servlet/IPMSP0011I.view'
+                    'Referer': 'https://banking.nonghyup.com/servlet/IPMSP0011I.view',
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36'
                 } 
             }
         );
 
-
-        console.log("실시간 보안 UUID 획득 중...");
-
+        // [자동화 단계 2] 응답 데이터에서 UUID 추출
         // 응답 문자열 내의 uuid 값을 따내기
         const uuidMatch = transkeyRes.data.match(/transkeyUuid=([a-f0-9]{64})/);
         const liveUuid = uuidMatch ? uuidMatch[1] : null;
@@ -108,41 +109,26 @@ async function automateNonghyup() {
         // 1. 기본 빈 값 필드
         payload.append('userIdDenyAutoComplete', '');
         payload.append('passwordDenyAutoComplete', '');
-        payload.append('InqDat', '20260320');
-        payload.append('EndDat', '20260330');
         payload.append('RnmNbr', '');
-        payload.append('InqFdt', '20260320');
-        payload.append('InqEndDat', '20260330');
-        payload.append('Gbn_1', '1');
-        payload.append('more', 'false');
-        payload.append('moreView', 'false');
         payload.append('PagGbn', '');
         payload.append('InqChkGbn', '');
         payload.append('QckInqGbn', '');
-        payload.append('lkg_acno_check_status', 'false');
         payload.append('bas_am', '');
         payload.append('am_bascd', '');
         payload.append('lkg_acno', '');
         payload.append('tr_rec_sjt_srch_abr_nm', '');
-        payload.append('GjaGbn', '1');
-        payload.append('Tk_InqGjaNbr_check', 'direct');
-        payload.append('InqGjaNbr', '3120226692471');
         payload.append('transkey_Tk_InqGjaNbr', '');
-        payload.append('Tk_GjaSctNbr_check', 'e2e');
-        payload.append('GjaSctNbr', '0000');
         payload.append('transkey_Tk_GjaSctNbr', '');
         payload.append('transkey_hMac_Tk_GjaSctNbr', '');
-        payload.append('Tk_rlno1_check', 'e2e');
-        payload.append('rlno1', '991202');
         payload.append('transkey_Tk_rlno1', '');
         payload.append('hid_enc_data', '');
         payload.append('E2E_passwordDenyAutoComplete', '');
 
         // 2. 조회 기간 및 날짜 설정
         payload.append('InqDat', '20260320');
-        payload.append('EndDat', '20260331');
+        payload.append('EndDat', '20260330');
         payload.append('InqFdt', '20260320');
-        payload.append('InqEndDat', '20260331');
+        payload.append('InqEndDat', '20260330');
         payload.append('start_year', '2026');
         payload.append('start_month', '03');
         payload.append('start_date', '20');
@@ -167,19 +153,21 @@ async function automateNonghyup() {
         // 4. 보안 세션 및 토큰
         payload.append('TOKEN', autoToken); // 정규표현식으로 추출한 값 사용
         payload.append('DEVICE_SESSION', 'd2e5f95c-e547-47fa-adc4-75a84266f09e');
-        payload.append('transkeyUuid', 'b5cec06a0e0d95c50917104ad34e0091b11a3d22acf4a2adc7c4acb943d3471a');
+        payload.append('transkeyUuid', liveUuid);
         payload.append('transkey_i', '3');
         payload.append('transkey_inputs', 'Tk_InqGjaNbr:InqGjaNbr:text,Tk_GjaSctNbr:GjaSctNbr:password,Tk_rlno1:rlno1:text');
-        payload.append('transkeyUuid', 'd4e506b87133dd2d2846377a8e5c1072518947f0ae775a44ac9b86a27716325e');
         payload.append('secure_view', 'Y');
-        payload.append('hid_key_data', '00938c1541d73697649aa1725f5ac1dac691907c0b377faea1db95391e535f061797da81975411c7707896a5890ded925d74c5b5a815d277c02154b897feefece9fd10be713615b5566b09e41f9d3498cb6c5f02f2a33395361e6b2ad5f27c2ab0147e2cc92e80c5f3a5454344044ebcc20347d44b8d756aa2857a10c2a8c6e5123945e8fb0778485ff0dd4ac8c3f18169fddacf5686bee3fb1540a86b1a595b435f863e4b5ba8226d3392ce3c421937da3d982748d7345c7f76ae0d828d513c9b732660f04503225c6a38b45ad4265273e0c06e13fd815e92a4898bac00362d290fc991ad8a07a9f55986d1caedb28e6a1d92cb4361ef5b3babf2fe6e2ac1e8');
-        payload.append('hid_enc_data', '');
-        payload.append('E2E_passwordDenyAutoComplete', '');
-        payload.append('E2E_GjaSctNbr', '1d2e20c20b6c9602e98b24d41994e9a00a63e25a989adb8b64acc614a18e200341cdbaec90ae1b35dd386d956d0bbb6d815c827d6ea840aafc12595f9946ba97');
-        payload.append('E2E_rlno1', '8c5a66bd5441422b44692a9674476bb46ae2c3d1648821e12ddd597527743a859d241746b713abd6b9b798c4d0a276a8dfd4713bb77f66b00ac146b3550da8b9d00e89fbe8585cb51e91ea2f3fbaef76f27d1e9163cd241b9a1725b63e2bacdc');
-        payload.append('TOKEN', '260402212631OEFIPINOPT0161961901');
-        payload.append('DEVICE_SESSION', '96f296cd-a665-4c80-bebd-5a5ea9e57dd1');
         payload.append('POP_WEB', 'true');
+
+        // 5. 핵심 암호화 데이터
+        payload.append('hid_key_data', '80899c2c828defcfebe7b7bbbe4f2d189bf55f7605d11850ff3720d31087bf2867c5350ba9de6d74cafd4483ca52af673735ada2c39320c8def7285be4bc18f9e9c0800454355c4debc9e063e3f53c40bcfb4f4aa95eaeba6b5b64005ac7da51e9ccd9338feb4063d107373d974d08c78ba55403bb37af24f8af2b0bc9097e5712f239ca23fa037dbb949891bbfe0ea036e66ad8e2e1fadbd5c7e4698c1840c30d1ca6f97f46fe7057a9a9b6f6b7a3bc8dfb93c5a3da1181019dcf02b1ebe7388ccdb69d0f00a5b7f5f3a3009e048af5395de4e8e3332257ae90e747da04970d3db559a0962a2d25ac21d224308aa945846fff9be859152381dbcead0ea1d39b');
+        payload.append('E2E_GjaSctNbr', 'e862359e318b66664e7f4d190541898b256b416208dd3d6f29a3fa8571c69135bba8dcd3f65a85ac1d4a0a884a44f71d761c36f97a1392a70d54140ac47d587a');
+        payload.append('E2E_rlno1', '5321e36ea8aaa7b548adb190f40ed3c1d4518240c61b7d83f80ede91b2f491acd19ca7ce8b869bb36d4fbaecf62b312757ab31bdbbb4d4c2e7045c09a53eb731312433a8decbd7c31dc6f774a6c647125ccfa585f0745da2a04b240c91896a04');
+        
+        // 6. 기타 옵션
+        payload.append('more', 'false');
+        payload.append('moreView', 'false');
+        payload.append('lkg_acno_check_status', 'false');
 
 
 
@@ -193,8 +181,6 @@ async function automateNonghyup() {
 
         if (response.status === 200){
             console.log(response.data);
-            console.log("거래 내역 조회 성공!");
-            console.log(await jar.getSetCookieStrings('https://banking.nonghyup.com'));
         }
         
 
