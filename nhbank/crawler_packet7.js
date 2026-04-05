@@ -189,7 +189,7 @@ function getPasswordCoordinates(password, keypadMap) {
 function encryptTransKeyPacket(coords, sessionKey) {
     const coordString = coords.map(c => `(${c.x},${c.y})`).join('');
     const key = Buffer.from(sessionKey, 'hex');
-    const iv = key;
+    const iv = key; // 🚨 다시 IV를 key와 동일하게 설정 (농협 보안 모듈 특성)
 
     const cipher = crypto.createCipheriv('aes-128-cbc', key, iv);
     let encrypted = cipher.update(coordString, 'utf8', 'hex');
@@ -216,21 +216,77 @@ function encryptWithRSA(modulusHex, exponentHex, sessionKey) {
 
 async function get_nhTransactions() {
     try {
+        // --- Step 0: 첫 접속 (초기 세션 생성) ---
         console.log('--- Step 0: 첫 접속 (세션 및 쿠키 생성) ---');
-        // 여기서 서버가 주는 첫 쿠키(SSID 등)를 자동으로 jar에 담습니다.
-        const res = await client.get(`${BASE_URL}/servlet/IPMSP0011I.view`, { headers: COMMON_HEADERS });
-        // 1. TOKEN 추출
-        const tokenMatch = res.data.match(/window\[['"]TOKEN['"]\]\s*=\s*['"]([^'"]+)['"]/);
-        const token = tokenMatch ? tokenMatch[1] : null;
-        // 2. DEVICE_SESSION 추출
-        const deviceSession = uuidv4();
+        const res0 = await client.get(`${BASE_URL}/servlet/IPMSP0011I.view`, { headers: COMMON_HEADERS });
 
-        console.log(`✅ 토큰 획득 완료: ${token}`);
-        console.log(`✅ 디바이스 세션 획득 완료: ${deviceSession}`);
-        
+        // 1. 초기 쿠키 수집 함수
+        const getCookiesFromRes = (res, currentMap = new Map()) => {
+            const setCookies = res.headers['set-cookie'] || [];
+            setCookies.forEach(cookie => {
+                const [pair] = cookie.split(';');
+                const [key, value] = pair.split('=');
+                if (key && value) currentMap.set(key.trim(), value.trim());
+            });
+            return currentMap;
+        };
+
+        let cookieMap = getCookiesFromRes(res0);
+
+        // --- Step 0.5: 보안 모듈 세션 활성화 (init & getCommonEnv) ---
+        console.log('--- Step 0.5: 세션 활성화 시도 ---');
+
+        // 현재 쿠키 문자열 생성
+        const getCookieString = (map) => Array.from(map.entries()).map(([k, v]) => `${k}=${v}`).join('; ');
+
+        // 1) op=init 호출
+        const resInit1 = await client.get(`${BASE_URL}/servlet/transkeyServlet?op=init`, { 
+            headers: {
+                ...COMMON_HEADERS,
+                'Cookie': getCookieString(cookieMap),
+                'Referer': `${BASE_URL}/servlet/IPMSP0011I.view`
+            }
+        });
+        cookieMap = getCookiesFromRes(resInit1, cookieMap); // 쿠키 업데이트
+
+        // 2) op=getCommonEnv 호출 (여기서 JSESSIONID가 나올 확률이 높음)
+        const resInit2 = await client.get(`${BASE_URL}/servlet/transkeyServlet?op=getCommonEnv`, {
+            headers: {
+                ...COMMON_HEADERS,
+                'Cookie': getCookieString(cookieMap),
+                'Referer': `${BASE_URL}/servlet/IPMSP0011I.view`
+            }
+        });
+        cookieMap = getCookiesFromRes(resInit2, cookieMap); // 쿠키 업데이트
+
+        const allCookies = getCookieString(cookieMap);
+        console.log('✅ 획득한 최종 쿠키:', allCookies);
+
+        // --- Step 1: RSA 공개키 획득 ---
         console.log('--- Step 1: RSA 공개키 획득 ---');
-        const resRSA = await client.get(`${BASE_URL}/servlet/transkeyServlet?op=getPublicRSAKey`, { headers: COMMON_HEADERS });
-        const [exponent, modulus] = resRSA.data.split('||');
+        const resRSA = await client.get(`${BASE_URL}/servlet/transkeyServlet?op=getPublicRSAKey`, { 
+            headers: {
+                ...COMMON_HEADERS,
+                'Cookie': allCookies, 
+                'Referer': `${BASE_URL}/servlet/IPMSP0011I.view`
+            } 
+        });
+
+        if (!resRSA.data || resRSA.data.trim() === "" || resRSA.data.includes('html')) {
+            console.error('서버 응답 내용:', resRSA.data);
+            throw new Error("서버에서 RSA 키를 보내주지 않았습니다. (세션/쿠키 문제 가능성)");
+        }
+
+        console.log('✅ RSA Raw Data 수신 성공:', resRSA.data);
+
+        const parts = resRSA.data.split('||');
+        const exponentHex = parts[0]; 
+        const modulusHex = parts[1];
+
+        // 이제 이 아래에 아까 만든 sessionKey 생성 및 RSA 암호화 로직을 이으시면 됩니다!
+
+
+
 
         console.log('--- Step 2: 세션 키 등록 (UUID 바인딩) ---');
         const liveUuid = crypto.randomBytes(32).toString('hex');
@@ -381,7 +437,12 @@ async function get_nhTransactions() {
         
         
     } catch (err) {
-        console.error('❌ 프로세스 실패:', err.message);
+        // console.error('❌ 프로세스 실패:', err.message);
+        if (err.response) {
+            console.error(`❌ 서버 응답 에러: ${err.response.status}`);
+        } else {
+            console.error(`❌ 요청 실패: ${err.message}`);
+        }
     }
 }
 
