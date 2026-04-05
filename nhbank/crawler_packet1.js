@@ -52,7 +52,7 @@ async function automateNonghyup() {
         console.log(mainPage.data);
 
 
-        /*
+        
         const tokenMatch = mainPage.data.match(/window\[['"]TOKEN['"]\]\s*=\s*['"]([^'"]+)['"]/);
         const autoToken = tokenMatch ? tokenMatch[1] : null;
 
