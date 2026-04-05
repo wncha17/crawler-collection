@@ -7,6 +7,7 @@ const sharp = require('sharp');
 const PNG = require('pngjs').PNG;
 const pixelmatch = require('pixelmatch').default || require('pixelmatch');
 const fs = require('fs');
+const { v4: uuidv4 } = require('uuid');
 const ERROR_LIMIT = 10; // 10픽셀 이상 차이 나면 숫자가 아니라고 판단
 
 const CONFIG = {
@@ -34,6 +35,32 @@ const COMMON_HEADERS = {
     'X-Requested-With': 'XMLHttpRequest',
     'Accept': 'text/plain, */*; q=0.01'
 };
+
+function formatToNhStyle(hexString) {
+    if (!hexString) return "";
+    
+    // 1. 2글자씩 정확히 끊어서 배열 생성
+    const bytes = hexString.match(/.{1,2}/g);
+    if (!bytes) return "";
+
+    let formatted = "";
+    for (let i = 0; i < bytes.length; i++) {
+        // 농협 스타일: 16바이트(32글자)마다 콤마 대신 공백 삽입
+        if (i > 0) {
+            if (i % 16 === 0) {
+                formatted += " ";
+            } else {
+                formatted += ",";
+            }
+        }
+        
+        // 16진수 소문자 그대로 추가 (앞에 0이 있으면 0 포함)
+        formatted += bytes[i].toLowerCase();
+    }
+
+    // 맨 앞에 공백 하나 + 내용 (피들러 규격 준수)
+    return " " + formatted; 
+}
 
 async function sliceKeypad() {
     const inputImage = 'auto_keypad.png';
@@ -160,18 +187,44 @@ function getPasswordCoordinates(password, keypadMap) {
     return passwordCoords;
 }
 
-// 1. RSA 암호화 함수 (testKey 생성용)
-function encryptSessionKey(modulusHex, exponentHex) {
-    // 서버와 약속할 랜덤 세션키 생성 (16진수 문자열)
-    const sessionKey = crypto.randomBytes(16).toString('hex');
-    console.log('생성된 원본 세션키:', sessionKey);
+function encryptTransKeyPacket(coords, sessionKey) {
+    // 1. 좌표 직렬화
+    const coordString = coords.map(c => `(${c.x},${c.y})`).join('');
+    console.log('--- 직렬화된 좌표 ---:', coordString);
 
+    // 2. AES-CBC 암호화 설정
+    // sessionKey는 hex 문자열이므로 Buffer로 변환
+    const key = Buffer.from(sessionKey, 'hex');
+    const iv = Buffer.from(sessionKey, 'hex'); // 일반적인 TransKey 설정
+
+    const cipher = crypto.createCipheriv('aes-128-cbc', key, iv);
+    let encrypted = cipher.update(coordString, 'utf8', 'hex');
+    encrypted += cipher.final('hex');
+
+    // 3. HMAC-SHA256 서명 (무결성 검증)
+    const hmac = crypto.createHmac('sha256', key);
+    hmac.update(encrypted);
+    const signature = hmac.digest('hex');
+
+    // 4. 최종 패킷 구성 (서버마다 다르지만 보통 암호문과 서명을 이어붙임)
+    // 농협 TransKey의 경우, 이 전체 값을 대문자로 변환하여 전송합니다.
+    const finalPacket = (encrypted + signature).toUpperCase();
+    
+    // console.log('--- 암호화 상세 ---');
+    // console.log('좌표문자열:', coordString);
+    // console.log('암호문(Hex):', encrypted.toUpperCase());
+    // console.log('서명(HMAC):', signature.toUpperCase());
+    
+    return finalPacket;
+}
+
+// 1. RSA 암호화 함수 (testKey 생성용)
+function encryptWithRSA(modulusHex, exponentHex, sessionKey) {
     const publicKey = forge.pki.setRsaPublicKey(
         new forge.jsbn.BigInteger(modulusHex, 16),
         new forge.jsbn.BigInteger(exponentHex, 16)
     );
 
-    // RSAES-PKCS1-v1_5 방식으로 암호화
     const encrypted = publicKey.encrypt(sessionKey, 'RSAES-PKCS1-V1_5');
     return forge.util.bytesToHex(encrypted);
 }
@@ -180,7 +233,15 @@ async function get_nhTransactions() {
     try {
         console.log('--- Step 0: 첫 접속 (세션 및 쿠키 생성) ---');
         // 여기서 서버가 주는 첫 쿠키(SSID 등)를 자동으로 jar에 담습니다.
-        await client.get(`${BASE_URL}/servlet/IPMSP0011I.view`, { headers: COMMON_HEADERS });
+        const res = await client.get(`${BASE_URL}/servlet/IPMSP0011I.view`, { headers: COMMON_HEADERS });
+        // 1. TOKEN 추출
+        const tokenMatch = res.data.match(/window\[['"]TOKEN['"]\]\s*=\s*['"]([^'"]+)['"]/);
+        const token = tokenMatch ? tokenMatch[1] : null;
+        // 2. DEVICE_SESSION 추출
+        const deviceSession = uuidv4();
+
+        console.log(`✅ 토큰 획득 완료: ${token ? '성공' : '실패'}`);
+        console.log(`✅ 디바이스 세션 획득 완료: ${deviceSession}`);
 
         console.log('--- Step 1: RSA 공개키 획득 ---');
         const resRSA = await client.get(`${BASE_URL}/servlet/transkeyServlet?op=getPublicRSAKey`, { headers: COMMON_HEADERS });
@@ -190,8 +251,8 @@ async function get_nhTransactions() {
         const liveUuid = crypto.randomBytes(32).toString('hex');
         const sessionKey = crypto.randomBytes(16).toString('hex'); // 랜덤 세션키
         
-        // RSA 암호화 (생략된 encryptSessionKey 함수 사용)
-        const liveKey = encryptSessionKey(modulus, exponent, sessionKey); 
+        // RSA 암호화 (생략된 encryptWithRSA 함수 사용)
+        const liveKey = encryptWithRSA(modulus, exponent, sessionKey); 
 
         await client.post(`${BASE_URL}/servlet/transkeyServlet`, 
             `op=setSessionKey&key=${liveKey}&transkeyUuid=${liveUuid}`, 
@@ -240,10 +301,102 @@ async function get_nhTransactions() {
         });
 
         fs.writeFileSync('auto_keypad.png', Buffer.from(resImage.data));
-        console.log('🎉 완전 자동화 성공! auto_keypad.png 확인 요망');
+        
+        console.log('--- Step 5: 이미지 분석 및 숫자 인식 ---');
+        await sliceKeypad(); // 이미지 분할
+        const keypadMap = await recognizeNumbers(); // 숫자 인식
+
+        // console.log('--- Step 6: 비밀번호 좌표 추출 ---');
+        // const coords = getPasswordCoordinates("7606", keypadMap);
+
+        // console.log('✅ 준비 완료! 클릭 좌표:', coords);
+
+        console.log('--- Step 6: 통합 페이로드 구성 및 전송 ---');
+
+        const userInfo = JSON.parse(fs.readFileSync('user_info.json', 'utf8'));
+
+        // 1. 각 필드별 암호화 패킷 생성 (숫자 인식 로직은 이미 구현된 것 활용)
+        const encAccount = formatToNhStyle(encryptTransKeyPacket(getPasswordCoordinates(userInfo.InqGjaNbr, keypadMap), sessionKey));
+        const encPassword = formatToNhStyle(encryptTransKeyPacket(getPasswordCoordinates(userInfo.GjaSctNbr, keypadMap), sessionKey));
+        const encBirth = formatToNhStyle(encryptTransKeyPacket(getPasswordCoordinates(userInfo.rlno1, keypadMap), sessionKey));
+        
+        const rawData = {
+            "InqDat": userInfo.InqStrtYmd,
+            "EndDat": userInfo.InqEndYmd,
+            "RnmNbr": "",
+            "InqFdt": userInfo.InqStrtYmd,
+            "InqEndDat": userInfo.InqEndYmd,
+            "Gbn_1": "1",
+            "more": "false",
+            "moreView": "false",
+            "PagGbn": "",
+            "InqChkGbn": "",
+            "QckInqGbn": "",
+            "lkg_acno_check_status": "false",
+            "bas_am": "",
+            "am_bascd": "",
+            "lkg_acno": "",
+            "tr_rec_sjt_srch_abr_nm": "",
+            "GjaGbn": "1",
+            "Tk_InqGjaNbr_check": "transkey",
+            "InqGjaNbr": userInfo.InqGjaNbr,
+            "transkey_Tk_InqGjaNbr": formatToNhStyle(encAccount),
+            "Tk_GjaSctNbr_check": "transkey",
+            "GjaSctNbr": "0000",
+            "transkey_Tk_GjaSctNbr": formatToNhStyle(encPassword),
+            "transkey_hMac_Tk_GjaSctNbr": "",
+            "Tk_rlno1_check": "transkey",
+            "rlno1": userInfo.rlno1,
+            "transkey_Tk_rlno1": formatToNhStyle(encBirth),
+            "InqGbn_2": "2",
+            "InqGbn": "1",
+            "start_year": userInfo.InqStrtYmd.substring(0, 4),
+            "start_month": userInfo.InqStrtYmd.substring(4, 6),
+            "start_date": userInfo.InqStrtYmd.substring(6, 8),
+            "end_year": userInfo.InqEndYmd.substring(0, 4),
+            "end_month": userInfo.InqEndYmd.substring(4, 6),
+            "end_date": userInfo.InqEndYmd.substring(6, 8),
+            "bas_year": "2026",
+            "bas_month": "04",
+            "transkey_i": "3",
+            "transkey_inputs": "Tk_InqGjaNbr:InqGjaNbr:text,Tk_GjaSctNbr:GjaSctNbr:password,Tk_rlno1:rlno1:text",
+            "transkeyUuid": liveUuid,
+            "secure_view": "Y",
+            "TOKEN": token,
+            "DEVICE_SESSION": deviceSession,
+            "POP_WEB": "true"
+        };
+
+        // 3. 전송 시 수동 인코딩 (불필요한 + 중복 방지)
+        const body = Object.entries(rawData)
+            .map(([key, val]) => {
+                let encodedVal = encodeURIComponent(val);
+                // %20(공백)을 +로 바꾸는 것이 피들러의 전송 방식입니다.
+                encodedVal = encodedVal.replace(/%20/g, '+');
+                return `${key}=${encodedVal}`;
+            })
+            .join('&');
+
+        console.log(`\nPAYLOAD: ${body}`)
+
+        const response = await client.post(`${BASE_URL}/servlet/IPMSP0011I.view`, body, {
+            headers: {
+                ...COMMON_HEADERS,
+                'Content-Type': 'application/x-www-form-urlencoded',
+                'Referer': `${BASE_URL}/servlet/IPMSP0011I.view`
+            }
+        });
+
+        if (response.data.includes('거래일시')) {
+            console.log('✅ 성공! 데이터를 수신했습니다.');
+            fs.writeFileSync('result_balance.html', response.data);
+        } else {
+            console.log('⚠️ 응답은 왔으나 조회가 되지 않았을 수 있습니다. HTML 확인 요망');
+        }
+        
 
     } catch (err) {
-        console.error('❌ 자동화 실패:', err.message);
+        console.error('❌ 프로세스 실패:', err.message);
     }
 }
 
