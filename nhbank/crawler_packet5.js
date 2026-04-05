@@ -1,19 +1,30 @@
 const axios = require('axios');
+const { wrapper } = require('axios-cookiejar-support');
+const { CookieJar } = require('tough-cookie');
 const forge = require('node-forge');
 const crypto = require('crypto');
+const fs = require('fs');
+
+// 쿠키 매니저 설정
+const jar = new CookieJar();
+const client = wrapper(axios.create({
+    jar,
+    withCredentials: true,
+    timeout: 10000
+}));
 
 const BASE_URL = 'https://banking.nonghyup.com';
 const COMMON_HEADERS = {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36',
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36',
     'Origin': BASE_URL,
-    'Referer': `${BASE_URL}/servlet/IPMSP0011I.view`,
+    // 'Referer': `${BASE_URL}/servlet/IPMSP0011I.view`,
     'Content-Type': 'application/x-www-form-urlencoded',
     'X-Requested-With': 'XMLHttpRequest',
     'Accept': 'text/plain, */*; q=0.01'
 };
 
 // 최신 쿠키를 입력하세요.
-const SESSION_COOKIE = 'mainSetCookie=main_IP; mainSetCookie=main_IP; PCID=474a5c82-1a76-c776-50d2-6dea2d61597a-1774957310344; acookie0=done0; EFIP_PT_SSID=NzU1ZjJjNzQtNTE2ZC00ZDI2LWFjNjgtYzA1MWM1MGZhNmMy; _n_session=17752813075539787592069; curSvcId=IPMSP0011I; _n_dfseq=4; _n_dur=13; _n_cTime=1775283228969; _n_seq=4'; 
+const SESSION_COOKIE = 'mainSetCookie=main_IP; mainSetCookie=main_IP; PCID=0c78485c-5837-2d88-fd7a-cadc3934c5cc-1774568756431; _n_session=17748261931842426013903; curSvcId=IPMSP0011I; acookie0=done0; EFIP_PT_SSID=NGY3OTM1YTQtMDQ3MS00MjY5LWE1MWYtNjNlNTA1ZDAzM2Ux; _n_dfseq=135; _n_dur=48; _n_cTime=1775202719483; _n_seq=135'; 
 
 // 1. RSA 암호화 함수 (testKey 생성용)
 function encryptSessionKey(modulusHex, exponentHex) {
@@ -33,20 +44,10 @@ function encryptSessionKey(modulusHex, exponentHex) {
 
 async function startSecuritySession() {
     try {
-        console.log('--- Step 0: TOKEN 추출 ---');
-        const resStep0 = await axios.get(`${BASE_URL}/servlet/IPMSP0011I.view`,
-            { headers: { ...COMMON_HEADERS, 'Cookie': SESSION_COOKIE } }
-        );
-
-        const tokenMatch = resStep0.data.match(/window\[['"]TOKEN['"]\]\s*=\s*['"]([^'"]+)['"]/);
-        const autoToken = tokenMatch ? tokenMatch[1] : null;
-        if (!autoToken) throw new Error("TOKEN을 획득하지 못했습니다.");
-        console.log(`획득한 TOKEN: ${autoToken}`);
-
-        console.log('\n--- Step 1: RSA 공개키 획득 및 수동 대입 ---');
-        const resStep1 = await axios.get(`${BASE_URL}/servlet/transkeyServlet?op=getPublicRSAKey`,
-            { headers: { ...COMMON_HEADERS, 'Cookie': SESSION_COOKIE } }
-        );
+        console.log('--- Step 1: RSA 공개키 획득 및 수동 대입 ---');
+        const resStep1 = await axios.get(`${BASE_URL}/servlet/transkeyServlet?op=getPublicRSAKey`, {
+            headers: { ...COMMON_HEADERS, 'Cookie': SESSION_COOKIE }
+        });
 
         let modulus, exponent;
         if (!resStep1.data || resStep1.data.length === 0) {
@@ -72,13 +73,14 @@ async function startSecuritySession() {
         );
         console.log('세션키 설정 응답 상태:', resStep2.status);
 
+        /*
         console.log('\n--- Step 3: 키패드 로드 (최종 확인) ---');
         const params = new URLSearchParams({
             op: 'load',
-            name: 'Tk_rlno1',
+            name: 'Tk_InqGjaNbr',
             keyboardType: 'number',
             fieldType: 'text',
-            maxSize: '6',
+            maxSize: '17',
             x: '0',
             y: '0',
             transkeyUuid: liveUuid
@@ -100,6 +102,33 @@ async function startSecuritySession() {
             console.log(`획득한 UUID: ${liveUuid2}`);
         } else {
             console.log('실패: UUID가 일치하지 않거나 세션이 거부되었습니다.');
+        }
+        
+        await new Promise(resolve => setTimeout(resolve, 2000));
+        */
+
+        let liveUuid2 = '1b7c420055f98323bb3771c1badb0548e5851315474ea15ea4522763fe90bbc4';
+        console.log('\n--- Step 4: 키패드 이미지(Layout) 데이터 획득 ---');
+        // op=getLayout은 실제 키패드 이미지와 버튼 좌표 정보를 가져옵니다.
+        const resStep4 = await axios.get(`${BASE_URL}/servlet/transkeyServlet`, {
+            params: {
+                op: 'singleLayout',
+                name: 'Tk_InqGjaNbr', //
+                dummy: Date.now().toString(),
+                transkeyUuid: liveUuid2, // 서버에서 확정해준 UUID 사용
+                keyboardType: 'number',
+                fieldType: 'text'
+            },
+            headers: { ...COMMON_HEADERS, 'Cookie': SESSION_COOKIE,
+                'Referer': 'https://banking.nonghyup.com/servlet/IPMSP0011I.view', // 필수!
+                'Origin': 'https://banking.nonghyup.com'
+            },
+            responseType: 'arraybuffer' // 이미지는 바이너리 데이터이므로 arraybuffer로 받습니다.
+        });
+
+        if (resStep4.status === 200) {
+            console.log('✅ 이미지 레이아웃 획득 성공! 데이터 크기:', resStep4.data.byteLength);
+            fs.writeFileSync('keypad.png', Buffer.from(resStep4.data)); // 파일로 저장해서 확인 가능합니다.
         }
 
         console.log('\n--- Step 4: 키패드 이미지(Layout) 데이터 획득 ---');
@@ -129,4 +158,4 @@ async function startSecuritySession() {
     }
 }
 
-startSecuritySession();
+get_nhTransactions();

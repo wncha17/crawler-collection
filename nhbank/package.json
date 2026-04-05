@@ -1,8 +1,22 @@
 {
   "dependencies": {
+<<<<<<< HEAD
     "axios-cookiejar-support": "^6.0.5",
     "cheerio": "^1.2.0",
     "node-forge": "^1.4.0",
     "selenium-webdriver": "^4.41.0"
+=======
+    "axios": "^1.14.0",
+    "axios-cookiejar-support": "^6.0.5",
+    "cheerio": "^1.2.0",
+    "crypto": "^1.0.1",
+    "node-forge": "^1.4.0",
+    "pixelmatch": "^7.1.0",
+    "pngjs": "^7.0.0",
+    "selenium-webdriver": "^4.41.0",
+    "sharp": "^0.34.5",
+    "tough-cookie": "^6.0.1",
+    "uuid": "^13.0.0"
+>>>>>>> d32f979723c6c71fa23388b2617d2225512ecedc
   }
 }
