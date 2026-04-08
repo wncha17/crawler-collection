@@ -154,9 +154,9 @@ async function recognizeNumbers() {
  * @param {string} password - 사용자가 입력한 비밀번호 (예: "1234")
  * @param {Object} keypadMap - recognizeNumbers()의 결과 (예: {'pos_1_1.png': 8, ...})
  */
-function getPasswordCoordinates(password, keypadMap) {
-    const passwordCoords = [];
-    const passwordChars = password.split('');
+function getNumCoordinates(password, keypadMap) {
+    const numCoords = [];
+    const numChars = password.split('');
 
     // 1. 숫자별로 어느 위치(pos_r_c)에 있는지 역추적 맵 생성
     const numberToPos = {};
@@ -167,7 +167,7 @@ function getPasswordCoordinates(password, keypadMap) {
     }
 
     // 2. 비밀번호 각 글자에 대해 좌표 계산
-    passwordChars.forEach((char) => {
+    numChars.forEach((char) => {
         const posName = numberToPos[parseInt(char)]; // 예: "pos_1_4"
         if (!posName) throw new Error(`숫자 ${char}를 키패드에서 찾을 수 없습니다.`);
 
@@ -180,10 +180,10 @@ function getPasswordCoordinates(password, keypadMap) {
         const x = Math.floor(CONFIG.startX + (col * (CONFIG.btnW + CONFIG.gap)) + (CONFIG.btnW / 2));
         const y = Math.floor(CONFIG.startY + (row * (CONFIG.btnH + CONFIG.gap)) + (CONFIG.btnH / 2));
 
-        passwordCoords.push({ char, x, y });
+        numCoords.push({ char, x, y });
     });
 
-    return passwordCoords;
+    return numCoords;
 }
 
 function encryptTransKeyPacket(coords, sessionKey) {
@@ -213,6 +213,70 @@ function encryptWithRSA(modulusHex, exponentHex, sessionKey) {
     const encrypted = publicKey.encrypt(sessionKeyBytes, 'RSAES-PKCS1-V1_5');
     return forge.util.bytesToHex(encrypted);
 }
+
+
+
+
+/**
+ * @param {string} fieldName - 농협 필드명 (예: 'Tk_InqGjaNbr', 'Tk_GjaSctNbr')
+ * @param {string} number - 실제 입력할 값 (예: '1234')
+ * @param {string} uuid - transkeyUuid
+ * @param {string} sessionKey - sessionKey
+ */
+async function getEncryptedField(fieldName, number, uuid, sessionKey) {
+    console.log(`--- [${fieldName}] 처리 시작 ---`);
+
+    // 0. 키패드 로드
+    await client.post(`${BASE_URL}/servlet/transkeyServlet`, 
+        new URLSearchParams({
+            op: 'load',
+            name: fieldName,
+            transkeyUuid: uuid,
+            keyboardType: 'number',
+            fieldType: (fieldName.includes('SctNbr') ? 'password' : 'text'), // 비번필드 구분
+            maxSize: '17', x: '0', y: '0'
+        }).toString(),
+        { headers: { ...COMMON_HEADERS, 'Referer': `${BASE_URL}/servlet/IPMSP0011I.view`} }
+    );
+
+    // A. 리소스 할당 (allocate)
+    await client.post(`${BASE_URL}/servlet/transkeyServlet`, 
+        new URLSearchParams({
+            op: 'allocate',
+            name: fieldName,
+            transkeyUuid: uuid,
+            keyboardType: 'number',
+            fieldType: (fieldName.includes('SctNbr') ? 'password' : 'text'), // 비번필드 구분
+            maxSize: '17', x: '0', y: '0'
+        }).toString(),
+        { headers: { ...COMMON_HEADERS, 'Referer': `${BASE_URL}/servlet/IPMSP0011I.view`} }
+    );
+
+    // B. 이미지 획득
+    const resImage = await client.get(`${BASE_URL}/servlet/transkeyServlet`, {
+        params: { op: 'singleLayout', name: fieldName, transkeyUuid: uuid, dummy: Date.now() },
+        headers: { ...COMMON_HEADERS, 'Referer': `${BASE_URL}/servlet/IPMSP0011I.view` },
+        responseType: 'arraybuffer'
+    });
+    
+    const imgPath = `keypad_${fieldName}.png`;
+    fs.writeFileSync(imgPath, Buffer.from(resImage.data));
+
+    // C. 이미지 분석 (기존 함수 활용)
+    // 주의: sliceKeypad와 recognizeNumbers가 파일명을 인자로 받게 살짝 수정해야 함
+    await sliceKeypad(imgPath); 
+    const keypadMap = await recognizeNumbers();
+
+    // D. 좌표 추출 및 암호화 (기존 함수 활용)
+    const coords = getNumCoordinates(number, keypadMap);
+    const encryptedPacket = encryptTransKeyPacket(coords, sessionKey);
+
+    return formatToNhStyle(encryptedPacket);
+}
+
+
+
+
 
 async function get_nhTransactions() {
     try {
@@ -244,55 +308,55 @@ async function get_nhTransactions() {
             { headers: { ...COMMON_HEADERS, 'Referer': `${BASE_URL}/servlet/IPMSP0011I.view` } }
         );
 
-        console.log('--- Step 3: 키패드 로드 (서버 인증) ---');
-        await client.post(`${BASE_URL}/servlet/transkeyServlet`, 
-            new URLSearchParams({
-                op: 'load',
-                name: 'Tk_InqGjaNbr',
-                transkeyUuid: liveUuid,
-                keyboardType: 'number',
-                fieldType: 'text'
-            }).toString(), 
-            { headers: { ...COMMON_HEADERS, 'Referer': `${BASE_URL}/servlet/IPMSP0011I.view` } }
-        );
+        // console.log('--- Step 3: 키패드 로드 (서버 인증) ---');
+        // await client.post(`${BASE_URL}/servlet/transkeyServlet`, 
+        //     new URLSearchParams({
+        //         op: 'load',
+        //         name: 'Tk_InqGjaNbr',
+        //         transkeyUuid: liveUuid,
+        //         keyboardType: 'number',
+        //         fieldType: 'text'
+        //     }).toString(), 
+        //     { headers: { ...COMMON_HEADERS, 'Referer': `${BASE_URL}/servlet/IPMSP0011I.view` } }
+        // );
 
-        console.log('--- Step 3.5: 리소스 할당 (allocate) ---');
-        await client.post(`${BASE_URL}/servlet/transkeyServlet`,
-            new URLSearchParams({
-                op: 'allocate',
-                name: 'Tk_InqGjaNbr',
-                transkeyUuid: liveUuid,
-                keyboardType: 'number',
-                fieldType: 'text',
-                maxSize: '17',
-                x: '0',
-                y: '0'
-            }).toString(),
-            { headers: { ...COMMON_HEADERS, 'Referer': `${BASE_URL}/servlet/IPMSP0011I.view`} }
-        );
+        // console.log('--- Step 3.5: 리소스 할당 (allocate) ---');
+        // await client.post(`${BASE_URL}/servlet/transkeyServlet`,
+        //     new URLSearchParams({
+        //         op: 'allocate',
+        //         name: 'Tk_InqGjaNbr',
+        //         transkeyUuid: liveUuid,
+        //         keyboardType: 'number',
+        //         fieldType: 'text',
+        //         maxSize: '17',
+        //         x: '0',
+        //         y: '0'
+        //     }).toString(),
+        //     { headers: { ...COMMON_HEADERS, 'Referer': `${BASE_URL}/servlet/IPMSP0011I.view`} }
+        // );
 
-        await new Promise(resolve => setTimeout(resolve, 500));
+        // await new Promise(resolve => setTimeout(resolve, 500));
 
-        console.log('--- Step 4: 이미지 획득 ---');
-        const resImage = await client.get(`${BASE_URL}/servlet/transkeyServlet`, {
-            params: {
-                op: 'singleLayout',
-                name: 'Tk_InqGjaNbr',
-                transkeyUuid: liveUuid,
-                dummy: Date.now()
-            },
-            headers: { ...COMMON_HEADERS, 'Referer': `${BASE_URL}/servlet/IPMSP0011I.view` },
-            responseType: 'arraybuffer'
-        });
+        // console.log('--- Step 4: 이미지 획득 ---');
+        // const resImage = await client.get(`${BASE_URL}/servlet/transkeyServlet`, {
+        //     params: {
+        //         op: 'singleLayout',
+        //         name: 'Tk_InqGjaNbr',
+        //         transkeyUuid: liveUuid,
+        //         dummy: Date.now()
+        //     },
+        //     headers: { ...COMMON_HEADERS, 'Referer': `${BASE_URL}/servlet/IPMSP0011I.view` },
+        //     responseType: 'arraybuffer'
+        // });
 
-        fs.writeFileSync('auto_keypad.png', Buffer.from(resImage.data));
+        // fs.writeFileSync('auto_keypad.png', Buffer.from(resImage.data));
         
-        console.log('--- Step 5: 이미지 분석 및 숫자 인식 ---');
-        await sliceKeypad(); // 이미지 분할
-        const keypadMap = await recognizeNumbers(); // 숫자 인식
+        // console.log('--- Step 5: 이미지 분석 및 숫자 인식 ---');
+        // await sliceKeypad(); // 이미지 분할
+        // const keypadMap = await recognizeNumbers(); // 숫자 인식
 
         // console.log('--- Step 6: 비밀번호 좌표 추출 ---');
-        // const coords = getPasswordCoordinates("7606", keypadMap);
+        // const coords = getNumCoordinates("7606", keypadMap);
 
         // console.log('✅ 준비 완료! 클릭 좌표:', coords);
 
@@ -301,9 +365,14 @@ async function get_nhTransactions() {
         const userInfo = JSON.parse(fs.readFileSync('user_info.json', 'utf8'));
 
         // 1. 각 필드별 암호화 패킷 생성 (숫자 인식 로직은 이미 구현된 것 활용)
-        const encAccount = formatToNhStyle(encryptTransKeyPacket(getPasswordCoordinates(userInfo.InqGjaNbr, keypadMap), sessionKey));
-        const encPassword = formatToNhStyle(encryptTransKeyPacket(getPasswordCoordinates(userInfo.GjaSctNbr, keypadMap), sessionKey));
-        const encBirth = formatToNhStyle(encryptTransKeyPacket(getPasswordCoordinates(userInfo.rlno1, keypadMap), sessionKey));
+        // const encAccount = formatToNhStyle(encryptTransKeyPacket(getNumCoordinates(userInfo.InqGjaNbr, keypadMap), sessionKey));
+        // const encPassword = formatToNhStyle(encryptTransKeyPacket(getNumCoordinates(userInfo.GjaSctNbr, keypadMap), sessionKey));
+        // const encBirth = formatToNhStyle(encryptTransKeyPacket(getNumCoordinates(userInfo.rlno1, keypadMap), sessionKey));
+
+        // Step 6: 각 필드별 암호화 패킷 생성 (함수 호출로 끝!)
+        const encAccount = await getEncryptedField('Tk_InqGjaNbr', userInfo.InqGjaNbr, liveUuid, sessionKey);
+        const encPassword = await getEncryptedField('Tk_GjaSctNbr', userInfo.GjaSctNbr, liveUuid, sessionKey);
+        const encBirth = await getEncryptedField('Tk_rlno1', userInfo.rlno1, liveUuid, sessionKey);
         
         const rawData = {
             "InqDat": userInfo.InqStrtYmd,

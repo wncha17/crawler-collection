@@ -140,7 +140,7 @@ async function recognizeNumbers(fieldName) {
             // 두 이미지 간의 차이 픽셀 수 계산
             const diffPixels = pixelmatch(
                 sliceImg.data, refImg.data, diffCanvas.data, 
-                refImg.width, refImg.height, { threshold: 0.2 }
+                refImg.width, refImg.height, { threshold: 0.1 }
             );
 
             if (diffPixels < minDiff) {
@@ -170,34 +170,54 @@ async function recognizeNumbers(fieldName) {
  * @param {string} value - 사용자가 입력한 번호 (예: "1234")
  * @param {Object} keypadMap - recognizeNumbers()의 결과 (예: {'pos_1_1.png': 8, ...})
  */
-function getNumCoordinates(value, keypadMap) {
+function getNumCoordinates(value, keypadMap, fieldName) {
     const numCoords = [];
-    const numChars = String(value).split(''); // 숫자가 들어올 경우 대비
+    const numChars = String(value).split('');
 
+    // 1. 역방향 맵핑 생성 (숫자 -> 좌표 파일명 리스트)
+    // 중복 인식을 대비해 배열로 저장하는 것이 안전합니다.
     const numberToPos = {};
     for (const [pos, num] of Object.entries(keypadMap)) {
         if (num !== null) {
-            numberToPos[num] = pos;
+            // 해당 숫자가 처음 등장하면 배열 생성, 아니면 추가
+            if (!numberToPos[num]) numberToPos[num] = [];
+            numberToPos[num].push(pos);
         }
     }
 
-    numChars.forEach((char) => {
-        const posName = numberToPos[parseInt(char)]; 
-        if (!posName) throw new Error(`숫자 ${char}를 키패드에서 찾을 수 없습니다.`);
+    console.log(`[${fieldName}] 좌표 변환 시작: 입력값="${value}" (길이: ${numChars.length})`);
 
-        // (\d)_(\d) 앞에 어떤 문자가 와도 뒤의 숫자 두 개만 추출합니다.
-        const match = posName.match(/(\d)_(\d)(?:\.png)?$/); 
+    numChars.forEach((char, index) => {
+        const num = parseInt(char);
+        const posOptions = numberToPos[num];
         
-        if (!match) throw new Error(`${posName}에서 좌표를 추출할 수 없습니다.`);
+        if (!posOptions || posOptions.length === 0) {
+            throw new Error(`[${fieldName}] 숫자 ${char}를 키패드에서 찾을 수 없습니다. (인식 결과 확인 필요)`);
+        }
 
-        const row = parseInt(match[1]) - 1;
-        const col = parseInt(match[2]) - 1;
+        // 여러 개의 좌표가 있다면 첫 번째 것을 사용 (보통 하나만 있어야 정상)
+        const posName = posOptions[0]; 
 
-        const x = Math.floor(CONFIG.startX + (col * (CONFIG.btnW + CONFIG.gap)) + (CONFIG.btnW / 2));
-        const y = Math.floor(CONFIG.startY + (row * (CONFIG.btnH + CONFIG.gap)) + (CONFIG.btnH / 2));
+        // 정규식 수정: 파일명 끝에서 _행_열 숫자를 정확히 추출
+        const match = posName.match(/(\d+)_(\d+)(?:\.png)?$/);
+        if (!match) throw new Error(`[${fieldName}] ${posName}에서 좌표 파싱 실패`);
+
+        const row = parseInt(match[1]); // 1-based
+        const col = parseInt(match[2]); // 1-based
+
+        // 좌표 계산 (CONFIG 값들이 정확한지 다시 한번 확인!)
+        const x = Math.floor(CONFIG.startX + (col - 1) * CONFIG.gap + (CONFIG.btnW / 2));
+        const y = Math.floor(CONFIG.startY + (row - 1) * CONFIG.gap + (CONFIG.btnH / 2));
 
         numCoords.push({ char, x, y });
+        
+        // 디버깅 로그: 각 자리수가 누락 없이 추가되는지 확인
+        console.log(`  - ${index + 1}번째 자리 [${char}]: ${posName} -> (${x}, ${y})`);
     });
+
+    if (numCoords.length !== numChars.length) {
+        console.error(`🚨 [${fieldName}] 길이 불일치! 입력:${numChars.length}, 결과:${numCoords.length}`);
+    }
 
     return numCoords;
 }
@@ -284,7 +304,7 @@ async function getEncryptedField(fieldName, value, uuid, sessionKey) {
     const keypadMap = await recognizeNumbers(fieldName);
 
     // D. 좌표 추출 및 암호화 (기존 함수 활용)
-    const coords = getNumCoordinates(value, keypadMap);
+    const coords = getNumCoordinates(value, keypadMap, fieldName);
     const encryptedPacket = encryptTransKeyPacket(coords, sessionKey);
 
     return formatToNhStyle(encryptedPacket);
@@ -388,9 +408,13 @@ async function get_nhTransactions() {
         //     })
         //     .join('&');
 
-        console.log(`\nPAYLOAD: ${payload}`)
+        const finalPayloadString = payload.toString()
+            .replace(/%2C/g, ',')   // 암호문 블록의 콤마(,) 복구
+            .replace(/%3A/g, ':');  // transkey_inputs의 콜론(:) 복구
 
-        const response = await client.post(`${BASE_URL}/servlet/IPMSP0011I.view`, payload, {
+        console.log(`\n✅ 최종 전송 PAYLOAD: ${finalPayloadString}`);
+
+        const response = await client.post(`${BASE_URL}/servlet/IPMSP0011I.view`, finalPayloadString, {
             headers: {
                 ...COMMON_HEADERS,
                 'Content-Type': 'application/x-www-form-urlencoded',

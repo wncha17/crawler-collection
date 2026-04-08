@@ -105,6 +105,46 @@ function readImage(path) {
     });
 }
 
+// 이미지 추출 + 이진화(흑백) + 미세 이동
+async function findBestMatch(sliceBuffer, refImages, width, height) {
+    let bestNum = null;
+    let minDiff = Infinity;
+
+    // 0부터 9까지 모든 숫자 정답지와 대조
+    for (const num of [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]) {
+        const refImg = refImages[num]; // 미리 로드해둔 정답지 데이터
+
+        // 상하좌우 2px씩 총 25번의 좌표를 뒤집니다 (Jitter Search)
+        for (let yOff = -2; yOff <= 2; yOff++) {
+            for (let xOff = -2; xOff <= 2; xOff++) {
+                // 1. 미세 이동하여 추출하고, .threshold()로 회색 배경을 날립니다.
+                const currentData = await sharp(sliceBuffer)
+                    .extract({ 
+                        left: 2 + xOff, // 패딩 2px 기준
+                        top: 2 + yOff, 
+                        width: width, 
+                        height: height 
+                    })
+                    .threshold(180) // 180보다 밝으면 흰색, 어두우면 검은색 (회색 제거)
+                    .raw()
+                    .toBuffer();
+
+                // 2. pixelmatch로 정답지와 비교
+                const diff = pixelmatch(currentData, refImg.data, null, width, height, { threshold: 0.1 });
+
+                // 3. 최소 오차 업데이트
+                if (diff < minDiff) {
+                    minDiff = diff;
+                    bestNum = num;
+                }
+                if (minDiff === 0) break; // 완벽 일치 시 조기 종료
+            }
+            if (minDiff === 0) break;
+        }
+    }
+    return { bestNum, minDiff };
+}
+
 async function recognizeNumbers(fieldName) {
     const sliceDir = './slices';
     const refDir = './refs';
@@ -112,53 +152,52 @@ async function recognizeNumbers(fieldName) {
     // 1. 해당 필드(fieldName)로 시작하는 파일만 필터링합니다.
     const slices = fs.readdirSync(sliceDir).filter(f => 
         f.endsWith('.png') && f.startsWith(fieldName)
-    );
+    ).sort();
 
-    const refs = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9];
+    // const refs = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9];
 
     // 정답지(Reference) 데이터 미리 로드
     const refImages = {};
-    for (const num of refs) {
-        refImages[num] = await readImage(`${refDir}/ref_${num}.png`);
+    for (let i = 0; i <= 9; i++) {
+        refImages[i] = await readImage(`${refDir}/ref_${i}.png`);
     }
 
     console.log(`--- [${fieldName}] 숫자 인식 시작 ---`);
     const results = {};
 
+    let REF_W = 33;
+    let REF_H = 34;
     for (const sliceFile of slices) {
-        const slicePath = `${sliceDir}/${sliceFile}`;
-        const sliceImg = await readImage(slicePath);
+        // 파일명에서 행(row)과 열(col) 정보를 파싱 (예: Tk_rlno1_1_2.png -> row 1, col 2)
+        const parts = sliceFile.split('_');
+        const row = parseInt(parts[parts.length - 2]); // 뒤에서 두 번째
+        const col = parseInt(parts[parts.length - 1].split('.')[0]); // 마지막 숫자
 
-        let minDiff = Infinity;
-        let recognizedNum = -1;
+        // 각 버튼의 고유 시작 좌표 계산
+        const currentStartX = CONFIG.startX + (col - 1) * CONFIG.gap;
+        const currentStartY = CONFIG.startY + (row - 1) * CONFIG.gap;
 
-        // 2. 10개의 정답지와 하나씩 비교
-        for (const num of refs) {
-            const refImg = refImages[num];
-            const diffCanvas = new PNG({ width: refImg.width, height: refImg.height });
-            
-            // 두 이미지 간의 차이 픽셀 수 계산
-            const diffPixels = pixelmatch(
-                sliceImg.data, refImg.data, diffCanvas.data, 
-                refImg.width, refImg.height, { threshold: 0.2 }
-            );
+        // 1. 버튼 자르기 (Jitter Search를 위해 사방 2px 여유)
+        const sliceBuffer = await sharp(`keypad_${fieldName}.png`) // 원본 전체 키패드 이미지 경로
+            .extract({ 
+                left: Math.max(0, currentStartX - 2), 
+                top: Math.max(0, currentStartY - 2), 
+                width: REF_W + 4, 
+                height: REF_H + 4 
+            })
+            .toBuffer();
 
-            if (diffPixels < minDiff) {
-                minDiff = diffPixels;
-                recognizedNum = num;
-            }
-        }
+        // 2. 탐색 함수 실행 (앞서 만든 findBestMatch 호출)
+        const { bestNum, minDiff } = await findBestMatch(sliceBuffer, refImages, REF_W, REF_H);
 
-        if (minDiff > ERROR_LIMIT) {
-            results[sliceFile] = null;
-            console.log(`[${sliceFile}] 인식 결과: 알 수 없음 (빈 칸 혹은 로고)`);
+        // 3. 결과 저장 및 출력
+        if (minDiff < CONFIG.ERROR_LIMIT) {
+            results[sliceFile] = bestNum; // results 객체에 저장
+            console.log(`[${sliceFile}] 인식 성공: ${bestNum} (차이: ${minDiff}px)`);
         } else {
-            results[sliceFile] = recognizedNum;
-            console.log(`[${sliceFile}] 인식 결과: ${recognizedNum} (차이: ${minDiff}px)`);
+            results[sliceFile] = null;
+            console.log(`[${sliceFile}] 인식 실패 (최소 차이: ${minDiff}px)`);
         }
-
-        // ⭐ 선택 사항: 인식이 끝난 개별 조각 파일을 삭제하여 폴더를 깨끗하게 유지합니다.
-        // fs.unlinkSync(slicePath);
     }
 
     console.log(`\n--- [${fieldName}] 최종 키패드 맵 ---`);
@@ -167,7 +206,7 @@ async function recognizeNumbers(fieldName) {
 }
 
 /**
- * @param {string} value - 사용자가 입력한 번호 (예: "1234")
+ * @param {string} value - 사용자가 입력한 비밀번호 (예: "1234")
  * @param {Object} keypadMap - recognizeNumbers()의 결과 (예: {'pos_1_1.png': 8, ...})
  */
 function getNumCoordinates(value, keypadMap) {
@@ -331,52 +370,52 @@ async function get_nhTransactions() {
         await new Promise(resolve => setTimeout(resolve, 800));
         const encBirth = await getEncryptedField('Tk_rlno1', userInfo.rlno1, liveUuid, sessionKey);
         
-        const payload = new URLSearchParams();
-
-        payload.append('InqDat', userInfo.InqStrtYmd);
-        payload.append('EndDat', userInfo.InqEndYmd);
-        payload.append('RnmNbr', '');
-        payload.append('InqFdt', userInfo.InqStrtYmd);
-        payload.append('InqEndDat', userInfo.InqEndYmd);
-        payload.append('Gbn_1', '1');
-        payload.append('more', 'false');
-        payload.append('moreView', 'false');
-        payload.append('PagGbn', '');
-        payload.append('InqChkGbn', '');
-        payload.append('QckInqGbn', '');
-        payload.append('lkg_acno_check_status', 'false');
-        payload.append('bas_am', '');
-        payload.append('am_bascd', '');
-        payload.append('lkg_acno', '');
-        payload.append('tr_rec_sjt_srch_abr_nm', '');
-        payload.append('GjaGbn', '1');
-        payload.append('Tk_InqGjaNbr_check', 'transkey');
-        payload.append('InqGjaNbr', userInfo.InqGjaNbr);
-        payload.append('transkey_Tk_InqGjaNbr', encAccount);
-        payload.append('Tk_GjaSctNbr_check', 'transkey');
-        payload.append('GjaSctNbr', '0000');
-        payload.append('transkey_Tk_GjaSctNbr', encPassword);
-        payload.append('transkey_hMac_Tk_GjaSctNbr', '');
-        payload.append('Tk_rlno1_check', 'transkey');
-        payload.append('rlno1', userInfo.rlno1);
-        payload.append('transkey_Tk_rlno1', encBirth);
-        payload.append('InqGbn_2', '2');
-        payload.append('InqGbn', '1');
-        payload.append('start_year', userInfo.InqStrtYmd.substring(0, 4));
-        payload.append('start_month', userInfo.InqStrtYmd.substring(4, 6));
-        payload.append('start_date', userInfo.InqStrtYmd.substring(6, 8));
-        payload.append('end_year', userInfo.InqEndYmd.substring(0, 4));
-        payload.append('end_month', userInfo.InqEndYmd.substring(4, 6));
-        payload.append('end_date', userInfo.InqEndYmd.substring(6, 8));
-        payload.append('bas_year', '2026');
-        payload.append('bas_month', '04');
-        payload.append('transkey_i', '3');
-        payload.append('transkey_inputs', 'Tk_InqGjaNbr:InqGjaNbr:text,Tk_GjaSctNbr:GjaSctNbr:password,Tk_rlno1:rlno1:text');
-        payload.append('transkeyUuid', liveUuid);
-        payload.append('secure_view', 'Y');
-        payload.append('TOKEN', token);
-        payload.append('DEVICE_SESSION', deviceSession);
-        payload.append('POP_WEB', 'true');
+        const rawData = {
+            "InqDat": userInfo.InqStrtYmd,
+            "EndDat": userInfo.InqEndYmd,
+            "RnmNbr": "",
+            "InqFdt": userInfo.InqStrtYmd,
+            "InqEndDat": userInfo.InqEndYmd,
+            "Gbn_1": "1",
+            "more": "false",
+            "moreView": "false",
+            "PagGbn": "",
+            "InqChkGbn": "",
+            "QckInqGbn": "",
+            "lkg_acno_check_status": "false",
+            "bas_am": "",
+            "am_bascd": "",
+            "lkg_acno": "",
+            "tr_rec_sjt_srch_abr_nm": "",
+            "GjaGbn": "1",
+            "Tk_InqGjaNbr_check": "transkey",
+            "InqGjaNbr": userInfo.InqGjaNbr,
+            "transkey_Tk_InqGjaNbr": encAccount,
+            "Tk_GjaSctNbr_check": "transkey",
+            "GjaSctNbr": "0000",
+            "transkey_Tk_GjaSctNbr": encPassword,
+            "transkey_hMac_Tk_GjaSctNbr": "",
+            "Tk_rlno1_check": "transkey",
+            "rlno1": userInfo.rlno1,
+            "transkey_Tk_rlno1": encBirth,
+            "InqGbn_2": "2",
+            "InqGbn": "1",
+            "start_year": userInfo.InqStrtYmd.substring(0, 4),
+            "start_month": userInfo.InqStrtYmd.substring(4, 6),
+            "start_date": userInfo.InqStrtYmd.substring(6, 8),
+            "end_year": userInfo.InqEndYmd.substring(0, 4),
+            "end_month": userInfo.InqEndYmd.substring(4, 6),
+            "end_date": userInfo.InqEndYmd.substring(6, 8),
+            "bas_year": "2026",
+            "bas_month": "04",
+            "transkey_i": "3",
+            "transkey_inputs": "Tk_InqGjaNbr:InqGjaNbr:text,Tk_GjaSctNbr:GjaSctNbr:password,Tk_rlno1:rlno1:text",
+            "transkeyUuid": liveUuid,
+            "secure_view": "Y",
+            "TOKEN": token,
+            "DEVICE_SESSION": deviceSession,
+            "POP_WEB": "true"
+        };
 
         // 폼 데이터 직렬화
         // const body = Object.entries(rawData)
@@ -388,9 +427,9 @@ async function get_nhTransactions() {
         //     })
         //     .join('&');
 
-        console.log(`\nPAYLOAD: ${payload}`)
+        // console.log(`\nPAYLOAD: ${body}`)
 
-        const response = await client.post(`${BASE_URL}/servlet/IPMSP0011I.view`, payload, {
+        const response = await client.post(`${BASE_URL}/servlet/IPMSP0011I.view`, rawData, {
             headers: {
                 ...COMMON_HEADERS,
                 'Content-Type': 'application/x-www-form-urlencoded',

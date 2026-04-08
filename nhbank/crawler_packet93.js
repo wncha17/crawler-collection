@@ -42,31 +42,6 @@ const COMMON_HEADERS = {
     'Accept': 'text/plain, */*; q=0.01'
 };
 
-function formatToNhStyle(hexString) {
-    if (!hexString) return "";
-    const bytes = hexString.match(/.{1,2}/g);
-    if (!bytes) return "";
-
-    const processedBytes = bytes.map(byte => {
-        const hex = byte.toLowerCase();
-        // 0으로 시작하면 0 제거 (농협 스타일: 0a -> a)
-        return hex.startsWith('0') ? hex.substring(1) : hex; 
-    });
-
-    // 1. 맨 앞은 무조건 공백 한 칸으로 시작
-    let result = " "; 
-    for (let i = 0; i < processedBytes.length; i++) {
-        // 2. 16바이트마다 '한 칸 공백' 추가 (여기에 +를 직접 넣지 마세요!)
-        if (i > 0 && i % 16 === 0) {
-            result += " "; 
-        } else if (i > 0) {
-            result += ",";
-        }
-        result += processedBytes[i];
-    }
-    return result;
-}
-
 async function sliceKeypad(filename, fieldName) {
     const inputImage = filename;
     const outputDir = './slices';
@@ -109,20 +84,17 @@ async function recognizeNumbers(fieldName) {
     const sliceDir = './slices';
     const refDir = './refs';
     
-    // 1. 해당 필드(fieldName)로 시작하는 파일만 필터링합니다.
     const slices = fs.readdirSync(sliceDir).filter(f => 
         f.endsWith('.png') && f.startsWith(fieldName)
     );
 
     const refs = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9];
-
-    // 정답지(Reference) 데이터 미리 로드
     const refImages = {};
     for (const num of refs) {
         refImages[num] = await readImage(`${refDir}/ref_${num}.png`);
     }
 
-    console.log(`--- [${fieldName}] 숫자 인식 시작 ---`);
+    console.log(`--- [${fieldName}] 숫자 인식 시작 (강력 보정 모드) ---`);
     const results = {};
 
     for (const sliceFile of slices) {
@@ -131,17 +103,21 @@ async function recognizeNumbers(fieldName) {
 
         let minDiff = Infinity;
         let recognizedNum = -1;
+        let diffScores = []; // 디버깅용 모든 숫자 점수 기록
 
-        // 2. 10개의 정답지와 하나씩 비교
         for (const num of refs) {
             const refImg = refImages[num];
             const diffCanvas = new PNG({ width: refImg.width, height: refImg.height });
             
-            // 두 이미지 간의 차이 픽셀 수 계산
+            // 1. threshold를 0.05로 매우 낮춰 미세한 색상 차이도 잡아냄
+            // 2. includeAA: false로 설정하여 흐릿한 테두리 노이즈 무시 시도
             const diffPixels = pixelmatch(
                 sliceImg.data, refImg.data, diffCanvas.data, 
-                refImg.width, refImg.height, { threshold: 0.2 }
+                refImg.width, refImg.height, 
+                { threshold: 0.05, includeAA: false }
             );
+
+            diffScores.push({ num, diffPixels });
 
             if (diffPixels < minDiff) {
                 minDiff = diffPixels;
@@ -149,20 +125,24 @@ async function recognizeNumbers(fieldName) {
             }
         }
 
-        if (minDiff > ERROR_LIMIT) {
+        // --- [핵심 보정] 8 vs 0, 7 vs 1 경합 해결 로직 ---
+        // 8과 0은 픽셀 차이가 매우 적으므로, 점수 차이가 크지 않다면 
+        // 추가적인 검증(예: 중앙 픽셀 검사)이 필요할 수 있으나 우선 점수차로 분리
+        
+        // 픽셀 차이가 500이 넘어가는 경우는(924px 등) 좌표가 아예 틀린 경우입니다.
+        const dynamicLimit = (CONFIG.btnW * CONFIG.btnH) * 0.2; // 전체의 20% 이내여야 인정
+
+        if (minDiff > dynamicLimit) {
             results[sliceFile] = null;
-            console.log(`[${sliceFile}] 인식 결과: 알 수 없음 (빈 칸 혹은 로고)`);
+            console.log(`[${sliceFile}] ⚠️ 인식 불가: 가장 유사한 숫자(${recognizedNum})와도 ${minDiff}px 차이`);
         } else {
             results[sliceFile] = recognizedNum;
-            console.log(`[${sliceFile}] 인식 결과: ${recognizedNum} (차이: ${minDiff}px)`);
+            console.log(`[${sliceFile}] 매칭 완료: ${recognizedNum} (차이: ${minDiff}px)`);
         }
-
-        // ⭐ 선택 사항: 인식이 끝난 개별 조각 파일을 삭제하여 폴더를 깨끗하게 유지합니다.
-        // fs.unlinkSync(slicePath);
     }
 
     console.log(`\n--- [${fieldName}] 최종 키패드 맵 ---`);
-    console.log(results);
+    console.dir(results);
     return results;
 }
 
@@ -170,52 +150,80 @@ async function recognizeNumbers(fieldName) {
  * @param {string} value - 사용자가 입력한 번호 (예: "1234")
  * @param {Object} keypadMap - recognizeNumbers()의 결과 (예: {'pos_1_1.png': 8, ...})
  */
-function getNumCoordinates(value, keypadMap) {
+function getNumCoordinates(value, keypadMap, fieldName) {
     const numCoords = [];
-    const numChars = String(value).split(''); // 숫자가 들어올 경우 대비
+    const numChars = String(value).split('');
 
+    // 1. 역방향 맵핑 생성 (숫자 -> 좌표 파일명 리스트)
+    // 중복 인식을 대비해 배열로 저장하는 것이 안전합니다.
     const numberToPos = {};
     for (const [pos, num] of Object.entries(keypadMap)) {
         if (num !== null) {
-            numberToPos[num] = pos;
+            // 해당 숫자가 처음 등장하면 배열 생성, 아니면 추가
+            if (!numberToPos[num]) numberToPos[num] = [];
+            numberToPos[num].push(pos);
         }
     }
 
-    numChars.forEach((char) => {
-        const posName = numberToPos[parseInt(char)]; 
-        if (!posName) throw new Error(`숫자 ${char}를 키패드에서 찾을 수 없습니다.`);
+    console.log(`[${fieldName}] 좌표 변환 시작: 입력값="${value}" (길이: ${numChars.length})`);
 
-        // (\d)_(\d) 앞에 어떤 문자가 와도 뒤의 숫자 두 개만 추출합니다.
-        const match = posName.match(/(\d)_(\d)(?:\.png)?$/); 
+    numChars.forEach((char, index) => {
+        const num = parseInt(char);
+        const posOptions = numberToPos[num];
         
-        if (!match) throw new Error(`${posName}에서 좌표를 추출할 수 없습니다.`);
+        if (!posOptions || posOptions.length === 0) {
+            throw new Error(`[${fieldName}] 숫자 ${char}를 키패드에서 찾을 수 없습니다. (인식 결과 확인 필요)`);
+        }
 
-        const row = parseInt(match[1]) - 1;
-        const col = parseInt(match[2]) - 1;
+        // 여러 개의 좌표가 있다면 첫 번째 것을 사용 (보통 하나만 있어야 정상)
+        const posName = posOptions[0]; 
 
-        const x = Math.floor(CONFIG.startX + (col * (CONFIG.btnW + CONFIG.gap)) + (CONFIG.btnW / 2));
-        const y = Math.floor(CONFIG.startY + (row * (CONFIG.btnH + CONFIG.gap)) + (CONFIG.btnH / 2));
+        // 정규식 수정: 파일명 끝에서 _행_열 숫자를 정확히 추출
+        const match = posName.match(/(\d+)_(\d+)(?:\.png)?$/);
+        if (!match) throw new Error(`[${fieldName}] ${posName}에서 좌표 파싱 실패`);
+
+        const row = parseInt(match[1]); // 1-based
+        const col = parseInt(match[2]); // 1-based
+
+        // 좌표 계산 (CONFIG 값들이 정확한지 다시 한번 확인!)
+        const x = Math.floor(CONFIG.startX + (col - 1) * CONFIG.gap + (CONFIG.btnW / 2));
+        const y = Math.floor(CONFIG.startY + (row - 1) * CONFIG.gap + (CONFIG.btnH / 2));
 
         numCoords.push({ char, x, y });
+        
+        // 디버깅 로그: 각 자리수가 누락 없이 추가되는지 확인
+        console.log(`  - ${index + 1}번째 자리 [${char}]: ${posName} -> (${x}, ${y})`);
     });
+
+    if (numCoords.length !== numChars.length) {
+        console.error(`🚨 [${fieldName}] 길이 불일치! 입력:${numChars.length}, 결과:${numCoords.length}`);
+    }
 
     return numCoords;
 }
 
 function encryptTransKeyPacket(coords, sessionKey) {
-    const coordString = coords.map(c => `(${c.x},${c.y})`).join('');
     const key = Buffer.from(sessionKey, 'hex');
     const iv = key;
 
-    const cipher = crypto.createCipheriv('aes-128-cbc', key, iv);
-    let encrypted = cipher.update(coordString, 'utf8', 'hex');
-    encrypted += cipher.final('hex');
+    const encryptedBlocks = coords.map(c => {
+        const coordString = `${c.x},${c.y}`;
+        const cipher = crypto.createCipheriv('aes-128-cbc', key, iv);
+        
+        let encrypted = cipher.update(coordString, 'utf8', 'hex');
+        encrypted += cipher.final('hex');
 
-    const hmac = crypto.createHmac('sha256', key);
-    hmac.update(Buffer.from(encrypted, 'hex')); 
-    const signature = hmac.digest('hex');
+        // 1. 앞의 32글자(16바이트)만 추출
+        const finalHex = encrypted.substring(0, 32).toLowerCase();
 
-    return (encrypted + signature).toUpperCase();
+        // 2. 2글자씩 잘라서 배열로 만든 뒤, 각 바이트가 2자리가 되도록 보장 (매우 중요)
+        const bytes = finalHex.match(/.{1,2}/g);
+        
+        // 3. 콤마(,)로 연결 (여기서는 순수하게 콤마만 넣습니다. 인코딩은 나중에!)
+        return bytes.join(',');
+    });
+
+    return encryptedBlocks; // ["b2,6d,78...", "dc,4c,de..."] 형식으로 반환됨
 }
 
 // 1. RSA 암호화 함수 (testKey 생성용)
@@ -284,10 +292,15 @@ async function getEncryptedField(fieldName, value, uuid, sessionKey) {
     const keypadMap = await recognizeNumbers(fieldName);
 
     // D. 좌표 추출 및 암호화 (기존 함수 활용)
-    const coords = getNumCoordinates(value, keypadMap);
-    const encryptedPacket = encryptTransKeyPacket(coords, sessionKey);
+    const coords = getNumCoordinates(value, keypadMap, fieldName);
 
-    return formatToNhStyle(encryptedPacket);
+    // 1. 함수는 완벽하게 손질된 '블록 배열'을 줍니다.
+    const blocks = encryptTransKeyPacket(coords, sessionKey);
+    // 2. 블록 사이를 '공백( )'으로 구분해서 하나의 문자열로 합칩니다. (가장 중요!)
+    const combinedValue = " " + blocks.join(' ');
+    const encryptedPacket = combinedValue.replace(/%2B/g, '+');
+
+    return encryptedPacket;
 }
 
 async function get_nhTransactions() {
@@ -378,7 +391,6 @@ async function get_nhTransactions() {
         payload.append('DEVICE_SESSION', deviceSession);
         payload.append('POP_WEB', 'true');
 
-        // 폼 데이터 직렬화
         // const body = Object.entries(rawData)
         //     .map(([key, val]) => {
         //         const encodedVal = encodeURIComponent(val)
@@ -388,9 +400,11 @@ async function get_nhTransactions() {
         //     })
         //     .join('&');
 
-        console.log(`\nPAYLOAD: ${payload}`)
+        const finalPayloadString = payload.toString()
 
-        const response = await client.post(`${BASE_URL}/servlet/IPMSP0011I.view`, payload, {
+        console.log(`\n✅ 최종 전송 PAYLOAD: ${finalPayloadString}`);
+
+        const response = await client.post(`${BASE_URL}/servlet/IPMSP0011I.view`, finalPayloadString, {
             headers: {
                 ...COMMON_HEADERS,
                 'Content-Type': 'application/x-www-form-urlencoded',
