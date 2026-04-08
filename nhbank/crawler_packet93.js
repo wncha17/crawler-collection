@@ -6,6 +6,7 @@ const crypto = require('crypto');
 const sharp = require('sharp');
 const PNG = require('pngjs').PNG;
 const pixelmatch = require('pixelmatch').default || require('pixelmatch');
+const Tesseract = require('tesseract.js');
 const fs = require('fs');
 const { v4: uuidv4 } = require('uuid');
 const ERROR_LIMIT = 10; // 10픽셀 이상 차이 나면 숫자가 아니라고 판단
@@ -82,67 +83,42 @@ function readImage(path) {
 
 async function recognizeNumbers(fieldName) {
     const sliceDir = './slices';
-    const refDir = './refs';
-    
-    const slices = fs.readdirSync(sliceDir).filter(f => 
-        f.endsWith('.png') && f.startsWith(fieldName)
-    );
+    const slices = fs.readdirSync(sliceDir).filter(f => f.endsWith('.png') && f.startsWith(fieldName));
 
-    const refs = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9];
-    const refImages = {};
-    for (const num of refs) {
-        refImages[num] = await readImage(`${refDir}/ref_${num}.png`);
-    }
-
-    console.log(`--- [${fieldName}] 숫자 인식 시작 (강력 보정 모드) ---`);
+    console.log(`--- [${fieldName}] AI 정밀 보정 인식 시작 ---`);
     const results = {};
 
     for (const sliceFile of slices) {
         const slicePath = `${sliceDir}/${sliceFile}`;
-        const sliceImg = await readImage(slicePath);
-
-        let minDiff = Infinity;
-        let recognizedNum = -1;
-        let diffScores = []; // 디버깅용 모든 숫자 점수 기록
-
-        for (const num of refs) {
-            const refImg = refImages[num];
-            const diffCanvas = new PNG({ width: refImg.width, height: refImg.height });
-            
-            // 1. threshold를 0.05로 매우 낮춰 미세한 색상 차이도 잡아냄
-            // 2. includeAA: false로 설정하여 흐릿한 테두리 노이즈 무시 시도
-            const diffPixels = pixelmatch(
-                sliceImg.data, refImg.data, diffCanvas.data, 
-                refImg.width, refImg.height, 
-                { threshold: 0.05, includeAA: false }
-            );
-
-            diffScores.push({ num, diffPixels });
-
-            if (diffPixels < minDiff) {
-                minDiff = diffPixels;
-                recognizedNum = num;
-            }
-        }
-
-        // --- [핵심 보정] 8 vs 0, 7 vs 1 경합 해결 로직 ---
-        // 8과 0은 픽셀 차이가 매우 적으므로, 점수 차이가 크지 않다면 
-        // 추가적인 검증(예: 중앙 픽셀 검사)이 필요할 수 있으나 우선 점수차로 분리
         
-        // 픽셀 차이가 500이 넘어가는 경우는(924px 등) 좌표가 아예 틀린 경우입니다.
-        const dynamicLimit = (CONFIG.btnW * CONFIG.btnH) * 0.2; // 전체의 20% 이내여야 인정
+        // 1. 이미지 전처리: 확대 + 그레이스케일 + 대비 강화
+        const processedImageBuffer = await sharp(slicePath)
+            .resize(100, 100, { fit: 'contain', background: { r: 255, g: 255, b: 255 } }) // 3배 이상 확대
+            .greyscale() // 흑백 전환
+            .threshold(180) // 노이즈 제거 (테두리 선 날리기)
+            .toBuffer();
 
-        if (minDiff > dynamicLimit) {
+        // 2. Tesseract 실행
+        const { data: { text } } = await Tesseract.recognize(
+            processedImageBuffer,
+            'eng',
+            { 
+                tessedit_char_whitelist: '0123456789', // 숫자만 허용
+                tessedit_pageseg_mode: '10', // SINGLE_CHAR (단일 문자 모드)
+            }
+        );
+
+        const recognizedNum = text.replace(/[^0-9]/g, ''); // 숫자 외 문자 강제 제거
+
+        if (recognizedNum === "") {
             results[sliceFile] = null;
-            console.log(`[${sliceFile}] ⚠️ 인식 불가: 가장 유사한 숫자(${recognizedNum})와도 ${minDiff}px 차이`);
+            console.log(`[${sliceFile}] AI 판독: 실패 (로고 혹은 빈칸)`);
         } else {
-            results[sliceFile] = recognizedNum;
-            console.log(`[${sliceFile}] 매칭 완료: ${recognizedNum} (차이: ${minDiff}px)`);
+            const finalNum = parseInt(recognizedNum.charAt(0)); // 첫 글자만 취함
+            results[sliceFile] = finalNum;
+            console.log(`[${sliceFile}] AI 판독 완료: ${finalNum}`);
         }
     }
-
-    console.log(`\n--- [${fieldName}] 최종 키패드 맵 ---`);
-    console.dir(results);
     return results;
 }
 
