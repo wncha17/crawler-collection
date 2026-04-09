@@ -15,11 +15,21 @@ const { v4: uuidv4 } = require('uuid');
 // const ERROR_LIMIT = 10; // 10픽셀 이상 차이 나면 숫자가 아니라고 판단
 
 const CONFIG = {
-    startX: 55,
-    startY: 40,
-    btnW: 33,
-    btnH: 34,
-    gap: 4
+    'Tk_InqGjaNbr': { 
+        sliceX: 55, sliceY: 40,
+        packetX: 232, packetY: 524,
+        btnW: 33, btnH: 34, gap: 4 
+    },
+    'Tk_GjaSctNbr': {
+        sliceX: 55, sliceY: 40,
+        packetX: 232, packetY: 573,
+        btnW: 33, btnH: 34, gap: 4 
+    },
+    'Tk_rlno1': {
+        sliceX: 55, sliceY: 40,
+        packetX: 232, packetY: 622,
+        btnW: 33, btnH: 34, gap: 4
+    }
 };
 
 const FIELD_CONFIGS = {
@@ -92,6 +102,7 @@ async function sliceKeypad(filename, fieldName) {
     const inputImage = filename;
     const outputDir = './slices';
     if (!fs.existsSync(outputDir)) fs.mkdirSync(outputDir);
+    const config1 = CONFIG[fieldName];
 
     // 4행 4열 구조 (이미지의 숫자 배치 기준)
     // 1행: [비어있음, 8, 9, 0, 1] -> 실제론 사이드 버튼 제외하고 계산
@@ -106,24 +117,17 @@ async function sliceKeypad(filename, fieldName) {
 
     try {
         for (const pos of positions) {
-            const left = CONFIG.startX + (CONFIG.btnW + CONFIG.gap) * pos.c;
-            const top = CONFIG.startY + (CONFIG.btnH + CONFIG.gap) * pos.r;
+            const left = config1.sliceX + (config1.btnW + config1.gap) * pos.c;
+            const top = config1.sliceY + (config1.btnH + config1.gap) * pos.r;
 
             await sharp(inputImage)
-                .extract({ left, top, width: CONFIG.btnW, height: CONFIG.btnH })
+                .extract({ left, top, width: config1.btnW, height: config1.btnH })
                 .toFile(`${outputDir}/${pos.label}.png`);
         }
         console.log('✅ 모든 버튼 분할 완료!');
     } catch (err) {
         console.error('❌ 분할 중 오류:', err.message);
     }
-}
-
-// 이미지 파일을 읽어 PNG 객체로 변환하는 함수
-function readImage(path) {
-    return new Promise((resolve) => {
-        const img = fs.createReadStream(path).pipe(new PNG()).on('parsed', () => resolve(img));
-    });
 }
 
 async function recognizeWithThreshold(slicePath, thresholdValue) {
@@ -179,6 +183,7 @@ async function recognizeNumbers(fieldName) {
 function getNumCoordinates(value, keypadMap, fieldName) {
     const numCoords = [];
     const numChars = String(value).split('');
+    const config1 = CONFIG[fieldName]
 
     // 1. 역방향 맵핑 생성 (숫자 -> 좌표 파일명 리스트)
     // 중복 인식을 대비해 배열로 저장하는 것이 안전합니다.
@@ -212,8 +217,8 @@ function getNumCoordinates(value, keypadMap, fieldName) {
         const col = parseInt(match[2]); // 열 (1~3)
 
         // 1. 기준이 되는 중심점(Center) 계산
-        const centerX = CONFIG.startX + (col - 1) * CONFIG.gap + (CONFIG.btnW / 2);
-        const centerY = CONFIG.startY + (row - 1) * CONFIG.gap + (CONFIG.btnH / 2);
+        const centerX = config1.packetX + (col - 1) * (config1.btnW + config1.gap) + (config1.btnW / 2);
+        const centerY = config1.packetY + (row - 1) * (config1.btnH + config1.gap) + (config1.btnH / 2);
 
         // 2. 인간미(Randomness) 추가: ±3픽셀 내외로 무작위 오차 발생
         // Math.random() * 6 - 3 => -3.0 ~ +3.0 사이의 실수 생성
@@ -228,6 +233,11 @@ function getNumCoordinates(value, keypadMap, fieldName) {
         
         // 로그를 찍어보면 이제 7606의 '6'들이 서로 다른 좌표로 출력될 겁니다.
         console.log(`   - ${index + 1}번째 [${char}]: (${centerX}, ${centerY}) -> 랜덤 적용: (${x}, ${y})`);
+
+        // // 디버깅을 위해 잠시 고정 (offsetRange = 0)
+        // const x = Math.floor(centerX); 
+        // const y = Math.floor(centerY);
+        // console.log(`[DEBUG] 필드:${fieldName} / 숫자:${char} / 최종좌표:(${x}, ${y})`);
     });
 
     if (numCoords.length !== numChars.length) {
@@ -340,11 +350,11 @@ async function getEncryptedField(fieldName, value, uuid, sessionKey) {
 
 async function get_nhTransactions() {
     try {
-        const browserCookies = "mainSetCookie=main_IP; mainSetCookie=main_IP; PCID=0c78485c-5837-2d88-fd7a-cadc3934c5cc-1774568756431; _n_session=17748261931842426013903; curSvcId=IPMSP0011I; acookie0=done0; EFIP_PT_SSID=ZDU2YmRkOTUtZjFlNi00MmM3LTgwYzgtOWNkNWRlZjQ0NGEy; _n_seq=163; _n_dur=3; _n_cTime=1775711256370; _n_dfseq=163";
+        const browserCookies = "mainSetCookie=main_IP; mainSetCookie=main_IP; PCID=0c78485c-5837-2d88-fd7a-cadc3934c5cc-1774568756431; _n_session=17748261931842426013903; acookie0=done0; curSvcId=IPMSP0011I; EFIP_PT_SSID=MmY0NDZhNDgtNTNkMi00ZjNhLTk5MzEtNjk2NDAyOWRlM2Zm; _n_seq=177; _n_dur=3; _n_cTime=1775722436136; _n_dfseq=177";
 
-        browserCookies.split(';').forEach(async (cookieStr) => {
+        for (const cookieStr of browserCookies.split(';')) {
             await jar.setCookie(cookieStr.trim(), BASE_URL);
-        });
+        }
 
         console.log('--- Step -1: 보안 세션 빌드업 (nhbank.html) ---');
         // 진짜 시작점인 nhbank.html에 먼저 접속하여 기본 쿠키들을 확보
@@ -451,7 +461,7 @@ async function get_nhTransactions() {
         //     })
         //     .join('&');
 
-        const finalPayloadString = payload.toString()
+        const finalPayloadString = payload.toString();
 
         console.log(`\n✅ 최종 전송 PAYLOAD: ${finalPayloadString}`);
 
