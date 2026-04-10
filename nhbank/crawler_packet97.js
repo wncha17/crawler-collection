@@ -350,7 +350,7 @@ async function getEncryptedField(fieldName, value, uuid, sessionKey) {
 
 async function get_nhTransactions() {
     try {
-        const browserCookies = "mainSetCookie=main_IP; mainSetCookie=main_IP; PCID=0c78485c-5837-2d88-fd7a-cadc3934c5cc-1774568756431; _n_session=17748261931842426013903; acookie0=done0; curSvcId=IPMSP0011I; EFIP_PT_SSID=MmY0NDZhNDgtNTNkMi00ZjNhLTk5MzEtNjk2NDAyOWRlM2Zm; _n_seq=177; _n_dur=3; _n_cTime=1775722436136; _n_dfseq=177";
+        const browserCookies = "mainSetCookie=main_IP; mainSetCookie=main_IP; PCID=0c78485c-5837-2d88-fd7a-cadc3934c5cc-1774568756431; _n_session=17748261931842426013903; acookie0=done0; curSvcId=IPMSP0011I; EFIP_PT_SSID=NTRkOGM4NjQtNGU2Ni00ZmE4LWIyMzYtZjZhZjY2OTRiNmVj; _n_dfseq=189; _n_dur=4; _n_cTime=1775803985319; _n_seq=189";
 
         for (const cookieStr of browserCookies.split(';')) {
             await jar.setCookie(cookieStr.trim(), BASE_URL);
@@ -364,14 +364,16 @@ async function get_nhTransactions() {
 
         console.log('--- Step 0: 첫 접속 (세션 및 쿠키 생성) ---');
         // 여기서 서버가 주는 첫 쿠키(SSID 등)를 자동으로 jar에 담습니다.
-        const res = await client.get(`${BASE_URL}/servlet/IPMSP0011I.view`,
+        const res = await client.post(`${BASE_URL}/servlet/IPMSP0011I.view`,
             { headers: { ...COMMON_HEADERS, 'Referer': `${BASE_URL}/nhbank.html` } }
         );
         // 1. TOKEN 추출
         const tokenMatch = res.data.match(/window\[['"]TOKEN['"]\]\s*=\s*['"]([^'"]+)['"]/);
         const token = tokenMatch ? tokenMatch[1] : null;
+        // const token = '260410110331OEFIPINOPT0069765801';
         // 2. DEVICE_SESSION 추출
         const deviceSession = uuidv4();
+        // const deviceSession = '00a8e0c1-45cb-4d32-b2ce-33e0840ba05e';
 
         console.log(`✅ 토큰 획득 완료: ${token}`);
         console.log(`✅ 디바이스 세션 획득 완료: ${deviceSession}`);
@@ -385,9 +387,12 @@ async function get_nhTransactions() {
         console.log('--- Step 2: 세션 키 등록 (UUID 바인딩) ---');
         const liveUuid = crypto.randomBytes(32).toString('hex');
         const sessionKey = crypto.randomBytes(16).toString('hex'); // 랜덤 세션키
-        
+
         // RSA 암호화 (생략된 encryptWithRSA 함수 사용)
         const liveKey = encryptWithRSA(modulus, exponent, sessionKey); 
+
+        // const liveKey = '41f9a10390799d7d0be893233535d88e60b77a444825f931af82c1046d50eb948e05a4d015d9d58f828c1780019788624d53571c92ceb324c0073c2f8e2af0ab26a77e236886432ac735c8045a31f5c5aa9c5b69b2d8497e0787e576573dd3632562913ee064d4297715ac33c70e694d3c6185918fcd52bfded808885fca6dfe';
+        // const liveUuid = '05426d91961431e18e83bb88b9550772a3ba6c573b3d21c2103595aceafa6725';
 
         await client.post(`${BASE_URL}/servlet/transkeyServlet`, 
             `op=setSessionKey&key=${liveKey}&transkeyUuid=${liveUuid}`, 
