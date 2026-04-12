@@ -1,30 +1,10 @@
 const axios = require('axios');
-const tunnel = require('tunnel');
 const { CookieJar } = require('tough-cookie');
-const forge = require('node-forge');
-const crypto = require('crypto');
-const sharp = require('sharp');
-const Tesseract = require('tesseract.js');
+const vm = require('vm');
 const fs = require('fs');
 const { v4: uuidv4 } = require('uuid');
 
-const CONFIG = {
-    'Tk_InqGjaNbr': { 
-        sliceX: 55, sliceY: 40,
-        packetX: 232, packetY: 524,
-        btnW: 33, btnH: 34, gap: 4
-    },
-    'Tk_GjaSctNbr': {
-        sliceX: 55, sliceY: 40,
-        packetX: 232, packetY: 573,
-        btnW: 33, btnH: 34, gap: 4
-    },
-    'Tk_rlno1': {
-        sliceX: 55, sliceY: 40,
-        packetX: 232, packetY: 622,
-        btnW: 33, btnH: 34, gap: 4
-    }
-};
+
 
 const FIELD_CONFIGS = {
     'Tk_InqGjaNbr': { maxSize: '17', fieldType: 'text' },     // 계좌번호
@@ -32,21 +12,18 @@ const FIELD_CONFIGS = {
     'Tk_rlno1':     { maxSize: '6',  fieldType: 'text' }      // 생년월일
 };
 
+
+
 const jar = new CookieJar();
 
-// Fiddler 경유 Agent 생성
-const tunnelingAgent = tunnel.httpsOverHttp({
-    proxy: { host: '127.0.0.1', port: 8888 },
-    rejectUnauthorized: false
-});
-
+// proxy: false는 OS/환경변수 프록시가 axios에 자동 적용되는 것을 막기 위한 설정이다.
 const client = axios.create({
-    httpsAgent: tunnelingAgent,
     proxy: false,
     timeout: 30000
 });
 
-// 쿠키 수동 관리 인터셉터
+// axios 기본 쿠키 처리는 Node 환경에서 브라우저처럼 동작하지 않으므로
+// tough-cookie jar에 Set-Cookie를 저장하고 다음 요청에 Cookie 헤더로 직접 넣는다.
 client.interceptors.request.use(async (config) => {
     const cookie = await jar.getCookieString(config.url);
     if (cookie) config.headers['Cookie'] = cookie;
@@ -70,11 +47,31 @@ const COMMON_HEADERS = {
     'Accept': 'text/html, */*; q=0.01'
 };
 
-async function sliceKeyPad(filename, fieldName) {
+const transkeyContext = {
+    navigator: { userAgent: 'Mozilla/5.0 Chrome/123.0.0.0', appName: 'Netscape', plugins: [] },
+    screen: { height: 1080, colorDepth: 24, availWidth: 1920, availHeight: 1040 },
+    history: { length: 1 },
+    console
+};
+// 농협 TransKey 구버전 JS의 SEED/RSA 구현을 Node VM 안에 로드한다.
+// 최종 요청의 transkey_* 값은 이 구현과 같은 포맷이어야 서버가 복호화한다.
+vm.createContext(transkeyContext);
+vm.runInContext(fs.readFileSync('TranskeyLibPack_op.js', 'utf8'), transkeyContext);
+transkeyContext.setMaxDigits(131);
+
+
+
+
+
+
+async function sliceKeypad(filename, fieldName) {
     const inputImage = filename;
     const outputDir = './slices';
     if (!fs.existsSync(outputDir)) fs.mkdirSync(outputDir);
-    const config_slc = CONFIG[fieldName];
+
+    // 4행 4열 구조 (이미지의 숫자 배치 기준)
+    // 1행: [비어있음, 8, 9, 0, 1] -> 실제론 사이드 버튼 제외하고 계산
+    // 여기서는 0~9까지 10개 조각을 순서대로 따는 예시이다.
 
     const positions = [
         { r: 0, c: 0, label: `${fieldName}_1_1` }, { r: 0, c: 1, label: `${fieldName}_1_2` }, { r: 0, c: 2, label: `${fieldName}_1_3` }, { r: 0, c: 3, label: `${fieldName}_1_4` },
@@ -85,11 +82,11 @@ async function sliceKeyPad(filename, fieldName) {
 
     try {
         for (const pos of positions) {
-            const left = config_slc.sliceX + (config_slc.btnW + config_slc.gap) * pos.c;
-            const top = config_slc.sliceY + (config_slc.btnH + config_slc.gap) * pos.r;
+            const left = CONFIG.startX + (CONFIG.btnW + CONFIG.gap) * pos.c;
+            const top = CONFIG.startY + (CONFIG.btnH + CONFIG.gap) * pos.r;
 
             await sharp(inputImage)
-                .extract({ left, top, width: config_slc.btnW, height: config_slc.btnH })
+                .extract({ left, top, width: CONFIG.btnW, height: CONFIG.btnH })
                 .toFile(`${outputDir}/${pos.label}.png`);
         }
         console.log('✅ 모든 버튼 분할 완료!');
@@ -114,135 +111,19 @@ async function recognizeWithThreshold(slicePath, thresholdValue) {
     return text.replace(/[^0-9]/g, '').trim();
 }
 
-async function recognizeNumbers(fieldName) {
-    const sliceDir = './slices';
-    const slices = fs.readFileSync(sliceDir).filter(f => f.endsWith('.png') && f.startsWith(fieldName));
-    const results = {};
+// 제미나이 해설 안 본 부분 다 보기
 
-    console.log(`--- [${fieldName}] AI 멀티 레이어 인식 시작 ---`);
 
-    for (const sliceFile of slices) {
-        const slicePath = `${sliceDir}/${sliceFile}`;
-        
-        // 1차 시도: 180 (기존에 잘 되었던 설정)
-        let recognized = await recognizeWithThreshold(slicePath, 180);
 
-        // 2차 시도: 1차 실패 시 140~150으로 재시도 (8이나 뭉친 글자용)
-        if (recognized === "") {
-            recognized = await recognizeWithThreshold(slicePath, 140);
-        }
 
-        if (recognized === "") {
-            results[sliceFile] = null;
-            console.log(`[${sliceFile}] AI 판독: 최종 실패`);
-        } else {
-            const finalNum = parseInt(recognized.charAt(0));
-            results[sliceFile] = finalNum;
-            console.log(`[${sliceFile}] AI 판독 완료: ${finalNum}`);
-        }
-    }
-    return results;
-}
 
-/**
- * @param {string} value - 사용자가 입력한 번호 (예: "1234")
- * @param {Object} keypadMap - recognizeNumbers()의 결과 (예: {'Tk_InqGjaNbr_1_1.png': 8, ...})
- * @param {string} fieldName - 농협 필드명
- */
-function getNumCoordinates(value, keypadMap, fieldName) {
-    const numCoords = [];
-    const numChars = String(value).split('');
-    const config_pckt = CONFIG[fieldName]
 
-    // 역방향 맵핑 생성 (숫자 -> 좌표 파일명 리스트)
-    // 중복 인식을 대비해 배열로 저장하는 것이 안전
-    const numberToPos = {};
-    for (const [pos, num] of Object.entries(keypadMap)) {
-        if (num !== null) {
-            // 해당 숫자가 처음 등장하면 배열 생성, 아니면 추가
-            if (!numberToPos[num]) numberToPos[num] = [];
-            numberToPos[num].push(pos);
-        }
-    }
 
-    console.log(`[${fieldName}] 좌표 변환 시작: 입력값="${value}" (길이: ${numChars.length})`);
 
-    numChars.forEach((char, index) => {
-        const num = parseInt(char);
-        const posOptions = numberToPos[num];
-
-        if (!posOptions || posOptions.length === 0) {
-            throw new Error(`[${fieldName}] 숫자 ${char}를 키패드에서 찾을 수 없습니다. (인식 결과 확인 필요)`);
-        }
-
-        // 여러 개의 좌표가 있다면 첫 번째 것을 사용 (보통 하나만 있어야 정상)
-        const posName = posOptions[0]; 
-
-        // 정규식 수정: 파일명 끝에서 _행_열 숫자를 정확히 추출
-        const match = posName.match(/(\d+)_(\d+)(?:\.png)?$/);
-        if (!match) throw new Error(`[${fieldName}] ${posName}에서 좌표 파싱 실패`);
-
-        const row = parseInt(match[1]); // 행 (1~4)
-        const col = parseInt(match[2]); // 열 (1~3)
-
-        // 1. 기준이 되는 중심점(Center) 계산
-        const centerX = config_pckt + (col - 1) * (config_pckt.btnW + config_pckt.gap) + (config_pckt.btnW / 2);
-        const centerY = config_pckt + (row - 1) * (config_pckt.btnH + config_pckt.gap) + (config_pckt.btnH / 2);
-        
-        // 2. 인간미(Randomness) 추가: +-3픽셀 내외로 무작위 오차 발생
-        const offsetX = (Math.random() * 6) - 3; 
-        const offsetY = (Math.random() * 6) - 3;
-
-        // 3. 최종 정수 좌표 확정
-        const x = Math.floor(centerX + offsetX);
-        const y = Math.floor(centerY + offsetY);
-
-        numCoords.push({ char, x, y });
-
-        console.log(`   - ${index + 1}번째 [${char}]: (${centerX}, ${centerY}) -> 랜덤 적용: (${x}, ${y})`);
-    });
-
-    if (numCoords.length !== numChars.length) {
-        console.error(`🚨 [${fieldName}] 길이 불일치! 입력:${numChars.length}, 결과:${numCoords.length}`);
-    }
-
-    return numCoords;
-}
-
-function encryptTransKeyPacket(coords, sessionKey) {
-    const key = Buffer.from(sessionKey, 'hex');
-    const iv = key;
-
-    const encryptedBlocks = coords.map(c => {
-        const coordString = `${c.x},${c.y}`;
-        const cipher = crypto.createCipheriv('aes-128-cbc', key, iv);
-
-        let encrypted = cipher.update(coordString, 'utf8', 'hex');
-        encrypted += cipher.final('hex');
-
-        // 1. 앞의 32글자(16바이트)만 추출
-        const finalHex = encrypted.substring(0, 32).toLowerCase();
-
-        // 2. 2글자씩 잘라서 배열로 만든 뒤, 각 바이트가 2자리가 되도록 보장
-        const bytes = finalHex.match(/.{1,2}/g);
-
-        // 3. 콤마(,)로 연결
-        return bytes.join(',');
-    });
-
-    return encryptedBlocks; // ["b2,6d,78...", "dc,4c,de..."] 형식으로 반환됨
-}
-
-// RSA 암호화 함수
-function encryptWithRSA(modulusHex, exponentHex, sessionKey) {
-    const publicKey = forge.pki.setRsaPublicKey(
-        new forge.jsbn.BigInteger(modulusHex, 16),
-        new forge.jsbn.BigInteger(exponentHex, 16)
-    );
-
-    const sessionKeyBytes = forge.util.hexToBytes(sessionKey); 
-    const encrypted = publicKey.encrypt(sessionKeyBytes, 'RSAES-PKCS1-V1_5');
-    return forge.util.bytesToHex(encrypted);
+function encryptSessionKeyWithTranskey(exponentHex, modulusHex, sessionKey) {
+    // 서버의 setSessionKey는 Transkey JS의 RSAKeyPair/encryptedString 결과를 기대한다.
+    const rsaKey = new transkeyContext.RSAKeyPair(exponentHex, '', modulusHex);
+    return transkeyContext.encryptedString(rsaKey, sessionKey);
 }
 
 /**
@@ -261,7 +142,8 @@ async function getEncryptedField(fieldName, value, uuid, sessionKey) {
             op: 'load',
             name: fieldName,
             transkeyUuid: uuid,
-            keyboardType: config.fieldType,
+            keyboardType: 'number',
+            fieldType: config.fieldType,
             maxSize: config.maxSize,
             x: '0', y: '0'
         }).toString(),
@@ -293,13 +175,13 @@ async function getEncryptedField(fieldName, value, uuid, sessionKey) {
     fs.writeFileSync(imgPath, Buffer.from(resImage.data));
 
     // D. 이미지 분석
-    await sliceKeyPad(imgPath, fieldName);
+    await sliceKeypad(imgPath, fieldName);
     const keypadMap = await recognizeNumbers(fieldName);
 
     // E. 좌표 추출 및 암호화
     const coords = getNumCoordinates(value, keypadMap, fieldName);
-
     const blocks = encryptTranskeyPacket(coords, sessionKey);
+
     const combinedValue = " " + blocks.join(' ');
     const encryptedPacket = combinedValue.replace(/%2B/g, '+');
 
@@ -308,41 +190,49 @@ async function getEncryptedField(fieldName, value, uuid, sessionKey) {
 
 async function get_nhTransactions() {
     try {
+        // console.log('--- Step -1: 보안 세션 빌드업 (nhbank.html) ---');
+        // // 시작점인 nhbank.html에 먼저 접속하여 기본 쿠키들을 확보한다.
+        // await client.get(`${BASE_URL}/nhbank.html`, 
+        //     { headers: { ...COMMON_HEADERS, 'Referer': 'https://banking.nonghyup.com/' } }
+        // );
+
         console.log('--- Step 0: 첫 접속 (세션 및 쿠키 생성) ---');
-        const res = await client.post(`${BASE_URL}/servlet/IPMSP0011I.view`,
+        // 여기서 서버가 주는 첫 쿠키(SSID 등)를 자동으로 jar에 담는다.
+        const res = await client.post(`${BASE_URL}/servlet/IPMSP0011I.view`, '',
             { headers: { ...COMMON_HEADERS, 'Referer': `${BASE_URL}/nhbank.html` } }
         );
         // 1. TOKEN 추출
         const tokenMatch = res.data.match(/window\[['"]TOKEN['"]\]\s*=\s*['"]([^'"]+)['"]/);
         const token = tokenMatch ? tokenMatch[1] : null;
-        
-        // 2. DEVICE_SESSION 추출
+        // 2. DEVICE_SESSION 설정
         const deviceSession = uuidv4();
 
         console.log(`✅ 토큰 획득 완료: ${token}`);
         console.log(`✅ 디바이스 세션 획득 완료: ${deviceSession}`);
 
         console.log('--- Step 1: RSA 공개키 획득 ---');
-        const resRSA = await client.get(`${BASE_URL}/servlet/transkeyServlet?op=getPublicRSAKey`,
+        const resRSA = await client.post(`${BASE_URL}/servlet/transkeyServlet?op=getPublicRsaKey`, '',
             { headers: { ...COMMON_HEADERS, 'Referer': `${BASE_URL}/servlet/IPMSP0011I.view` } }
         );
         const [exponent, modulus] = resRSA.data.split('||');
+        if (!exponent || !modulus) {
+            throw new Error(`RSA 공개키 응답 파싱 실패: ${String(resRSA.data).slice(0, 120)}`);
+        }
 
         console.log('--- Step 2: 세션 키 등록 (UUID 바인딩) ---');
-        const liveUuid = crypto.randomBytes(32).toString('hex');
-        const sessionKey = crypto.randomBytes(16).toString('hex');
+        const liveUuid = crypto.randomBytes(20).toString('hex');
+        const sessionKey = crypto.randomBytes(8).toString('hex');
 
-        // RSA 암호화 (생략된 encryptWithRSA 함수 사용)
-        const liveKey = encryptWithRSA(modulus, exponent, sessionKey); 
+        const liveKey = encryptSessionKeyWithTranskey(exponent, modulus, sessionKey);
 
         await client.post(`${BASE_URL}/servlet/transkeyServlet`, 
             `op=setSessionKey&key=${liveKey}&transkeyUuid=${liveUuid}`, 
             { headers: { ...COMMON_HEADERS, 'Referer': `${BASE_URL}/servlet/IPMSP0011I.view` } }
         );
 
-        console.log('--- Step 3: 통합 페이로드 구성 및 전송 ---'); 
         const userInfo = JSON.parse(fs.readFileSync('user_info.json', 'utf8'));
-        // Step 6: 각 필드별 암호화 패킷 생성
+        
+        // 필드마다 현재 세션의 키패드 이미지를 새로 받아 OCR한 뒤 좌표 패킷을 만든다.
         const encAccount = await getEncryptedField('Tk_InqGjaNbr', userInfo.InqGjaNbr, liveUuid, sessionKey);
         await new Promise(resolve => setTimeout(resolve, 800));
         const encPassword = await getEncryptedField('Tk_GjaSctNbr', userInfo.GjaSctNbr, liveUuid, sessionKey);
@@ -398,7 +288,7 @@ async function get_nhTransactions() {
 
         const finalPayloadString = payload.toString();
 
-        console.log(`\n✅ 최종 전송 PAYLOAD: ${finalPayloadString}`);
+        console.log(`\n✅ 최종 전송 PAYLOAD 구성 완료 (${finalPayloadString.length} bytes)`);
 
         const response = await client.post(`${BASE_URL}/servlet/IPMSP0012R.frag`, finalPayloadString, {
             headers: {
@@ -411,6 +301,30 @@ async function get_nhTransactions() {
         if (response.data.includes('거래일시')) {
             console.log('✅ 성공! 데이터를 수신했습니다.');
             fs.writeFileSync('result_balance.html', response.data);
+
+            const $ = cheerio.load(response.data);
+            const transactions = [];
+
+            // 테이블 선택자를 더 구체적으로 지정 (순번이 있는 테이블)
+            $('table tr').each((i, el) => {
+                const cells = $(el).find('td');
+                if (cells.length >= 8) {
+                    transactions.push({
+                        "no": $(cells[0]).text().trim(),
+                        "date": $(cells[1]).text().trim(),
+                        "withdrawal": $(cells[2]).text().trim(),
+                        "deposit": $(cells[3]).text().trim(),
+                        "balance": $(cells[4]).text().trim(),
+                        "description": $(cells[5]).text().trim(),
+                        "record": $(cells[6]).text().trim(),
+                        "branch": $(cells[7]).text().trim()
+                    });
+                }
+            });
+
+            fs.writeFileSync('transactions.json', JSON.stringify(transactions, null, 4), 'utf8');
+            console.log(`✅ 성공! 총 ${transactions.length}건의 데이터를 저장했습니다.`);
+
         } else {
             console.log('⚠️ 응답은 왔으나 조회가 되지 않았을 수 있습니다. HTML 확인 요망');
             fs.writeFileSync('result_balance.html', response.data);
@@ -418,6 +332,15 @@ async function get_nhTransactions() {
 
     } catch (err) {
         console.error('❌ 프로세스 실패:', err.message);
+        if (err.response) {
+            console.error('   status:', err.response.status);
+            console.error('   content-type:', err.response.headers?.['content-type']);
+            if (typeof err.response.data === 'string') {
+                fs.writeFileSync('error_response.html', err.response.data);
+                console.error('   응답 본문 저장: error_response.html');
+                console.error('   응답 앞부분:', err.response.data.slice(0, 500).replace(/\s+/g, ' ').trim());
+            }
+        }
     }
 }
 
