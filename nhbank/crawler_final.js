@@ -3,16 +3,21 @@ const { CookieJar } = require('tough-cookie');
 const vm = require('vm');
 const fs = require('fs');
 const { v4: uuidv4 } = require('uuid');
+const crypto = require('crypto');
+const sharp = require('sharp');
+const Tesseract = require('tesseract.js');
+const cheerio = require('cheerio');
 
-
+const CONFIG = {
+    startX: 55, startY: 40,
+    btnW: 33, btnH: 34, gap: 4
+};
 
 const FIELD_CONFIGS = {
     'Tk_InqGjaNbr': { maxSize: '17', fieldType: 'text' },     // 계좌번호
     'Tk_GjaSctNbr': { maxSize: '4',  fieldType: 'password' }, // 비밀번호
     'Tk_rlno1':     { maxSize: '6',  fieldType: 'text' }      // 생년월일
 };
-
-
 
 const jar = new CookieJar();
 
@@ -58,11 +63,6 @@ const transkeyContext = {
 vm.createContext(transkeyContext);
 vm.runInContext(fs.readFileSync('TranskeyLibPack_op.js', 'utf8'), transkeyContext);
 transkeyContext.setMaxDigits(131);
-
-
-
-
-
 
 async function sliceKeypad(filename, fieldName) {
     const inputImage = filename;
@@ -111,14 +111,130 @@ async function recognizeWithThreshold(slicePath, thresholdValue) {
     return text.replace(/[^0-9]/g, '').trim();
 }
 
-// 제미나이 해설 안 본 부분 다 보기
+async function recognizeNumbers(fieldName) {
+    const sliceDir = './slices';
+    const slices = fs.readdirSync(sliceDir).filter(f => f.endsWith('.png') && f.startsWith(fieldName));
+    const results = {};
 
+    console.log(`--- [${fieldName}] AI 멀티 레이어 인식 시작 ---`);
 
+    for (const sliceFile of slices) {
+        const slicePath = `${sliceDir}/${sliceFile}`;
+        
+        // 1차 시도: 180 (기존에 잘 되었던 설정)
+        let recognized = await recognizeWithThreshold(slicePath, 180);
 
+        // 2차 시도: 1차 실패 시 140~150으로 재시도 (8이나 뭉친 글자용)
+        if (recognized === "") {
+            recognized = await recognizeWithThreshold(slicePath, 140);
+        }
 
+        if (recognized === "") {
+            results[sliceFile] = null;
+            console.log(`[${sliceFile}] AI 판독: 숫자 없음`);
+        } else {
+            const finalNum = parseInt(recognized.charAt(0));
+            results[sliceFile] = finalNum;
+            console.log(`[${sliceFile}] AI 판독 완료: ${finalNum}`);
+        }
+    }
+    return results;
+}
 
+/**
+ * @param {string} value - 사용자가 입력한 번호 (예: "1234")
+ * @param {Object} keypadMap - recognizeNumbers()의 결과 (예: {'pos_1_1.png': 8, ...})
+ */
+function getNumCoordinates(value, keypadMap, fieldName) {
+    const numCoords = [];
+    const numChars = String(value).split('');
 
+    // 역방향 맵핑 생성 (숫자 -> 좌표 파일명 리스트)
+    // 중복 인식을 대비해 배열로 저장하는 것이 안전하다.
+    const numberToPos = {};
+    for (const [pos, num] of Object.entries(keypadMap)) {
+        if (num !== null) {
+            // 해당 숫자가 처음 등장하면 배열 생성, 아니면 추가
+            if (!numberToPos[num]) numberToPos[num] = [];
+            numberToPos[num].push(pos);
+        }
+    }
 
+    console.log(`[${fieldName}] 좌표 변환 시작: 입력값="${value}" (길이: ${numChars.length})`);
+
+    numChars.forEach((char, index) => {
+        const num = parseInt(char);
+        const posOptions = numberToPos[num];
+        
+        if (!posOptions || posOptions.length === 0) {
+            throw new Error(`[${fieldName}] 숫자 ${char}를 키패드에서 찾을 수 없습니다. (인식 결과 확인 필요)`);
+        }
+
+        // OCR 결과가 중복될 수 있으므로, 먼저 잡힌 후보 좌표를 사용한다.
+        const posName = posOptions[0]; 
+
+        const match = posName.match(/(\d+)_(\d+)(?:\.png)?$/);
+        if (!match) throw new Error(`[${fieldName}] ${posName}에서 좌표 파싱 실패`);
+
+        const row = parseInt(match[1]);
+        const col = parseInt(match[2]);
+
+        // TransKey는 화면 절대좌표가 아니라 키패드 이미지 내부 offsetX/Y를 암호화한다.
+        const centerX = CONFIG.startX + (col - 1) * (CONFIG.btnW + CONFIG.gap) + (CONFIG.btnW / 2);
+        const centerY = CONFIG.startY + (row - 1) * (CONFIG.btnH + CONFIG.gap) + (CONFIG.btnH / 2);
+
+        // 같은 키를 여러 번 눌러도 완전히 같은 좌표가 반복되지 않도록 버튼 내부에서 약간 흔든다.
+        const offsetX = (Math.random() * 6) - 3; 
+        const offsetY = (Math.random() * 6) - 3;
+
+        const x = Math.floor(centerX + offsetX);
+        const y = Math.floor(centerY + offsetY);
+
+        numCoords.push({ char, x, y });
+        
+        console.log(`   - ${index + 1}번째 [${char}]: (${centerX}, ${centerY}) -> 랜덤 적용: (${x}, ${y})`);
+    });
+
+    if (numCoords.length !== numChars.length) {
+        console.error(`🚨 [${fieldName}] 길이 불일치! 입력:${numChars.length}, 결과:${numCoords.length}`);
+    }
+
+    return numCoords;
+}
+
+function encryptTransKeyPacket(coords, sessionKey) {
+    // 구버전 TransKey는 16진수 세션키 문자열의 각 nibble을 SEED 키 바이트처럼 사용한다.
+    const seedKey = Array.from(sessionKey.slice(0, 16)).map(ch => Number(`0x0${ch}`));
+    // 원본 JS의 고정 IV: ASCII "MobileTransKey10"
+    const iv = [0x4d, 0x6f, 0x62, 0x69, 0x6c, 0x65, 0x54, 0x72, 0x61, 0x6e, 0x73, 0x4b, 0x65, 0x79, 0x31, 0x30];
+
+    const encryptedBlocks = coords.map(c => {
+        // 브라우저 TransKey가 실제로 암호화하는 평문은 "x y" 형태다.
+        const geo = `${c.x} ${c.y}`;
+        const inData = new Array(16).fill(0);
+        const outData = new Array(16);
+        const roundKey = new Array(32);
+
+        for (let i = 0; i < geo.length; i++) {
+            if (geo.charAt(i) === ' ') {
+                inData[i] = geo.charCodeAt(i);
+            } else {
+                // 원본 JS와 동일하게 숫자 문자를 16진수 문자열로 변환한 값을 넣는다.
+                inData[i] = Number(geo.charAt(i)).toString(16);
+            }
+        }
+        // 원본 JS가 평문 뒤에 붙이는 고정 마커: space + "e"
+        inData[geo.length] = 32;
+        inData[geo.length + 1] = 101;
+
+        transkeyContext.Seed.SeedSetKey(roundKey, seedKey);
+        transkeyContext.Seed.SeedEncryptCbc(roundKey, iv, inData, 16, outData);
+
+        return outData.map(byte => Number(byte).toString(16)).join(',');
+    });
+
+    return encryptedBlocks;
+}
 
 function encryptSessionKeyWithTranskey(exponentHex, modulusHex, sessionKey) {
     // 서버의 setSessionKey는 Transkey JS의 RSAKeyPair/encryptedString 결과를 기대한다.
@@ -180,7 +296,7 @@ async function getEncryptedField(fieldName, value, uuid, sessionKey) {
 
     // E. 좌표 추출 및 암호화
     const coords = getNumCoordinates(value, keypadMap, fieldName);
-    const blocks = encryptTranskeyPacket(coords, sessionKey);
+    const blocks = encryptTransKeyPacket(coords, sessionKey);
 
     const combinedValue = " " + blocks.join(' ');
     const encryptedPacket = combinedValue.replace(/%2B/g, '+');
